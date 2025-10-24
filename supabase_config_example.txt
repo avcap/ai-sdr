@@ -1,0 +1,28 @@
+# Supabase Configuration
+# Copy this to .env and fill in your Supabase project details
+
+# Supabase Project Settings
+SUPABASE_URL=https://your-project-id.supabase.co
+SUPABASE_ANON_KEY=your-anon-key-here
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key-here
+
+# Database Connection (for direct PostgreSQL access if needed)
+DATABASE_URL=postgresql://postgres:your-password@db.your-project-id.supabase.co:5432/postgres
+
+# JWT Secret (for token verification)
+JWT_SECRET=your-jwt-secret-here
+
+# ==============================================
+# HOW TO GET THESE VALUES:
+# ==============================================
+# 1. Go to your Supabase project dashboard
+# 2. Click on "Settings" → "API"
+# 3. Copy the following:
+#    - Project URL → SUPABASE_URL
+#    - anon public → SUPABASE_ANON_KEY
+#    - service_role secret → SUPABASE_SERVICE_ROLE_KEY
+# 4. Go to "Settings" → "Database"
+#    - Copy the connection string → DATABASE_URL
+#    - Copy the JWT secret → JWT_SECRET
+
+

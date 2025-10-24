@@ -1,0 +1,6 @@
+name,company,title,email,industry,company_size,location
+John Smith,TechCorp Inc,VP of Engineering,john@techcorp.com,Technology,100-500,San Francisco CA
+Sarah Johnson,DataFlow Systems,CTO,sarah@dataflow.com,Data Analytics,50-100,Austin TX
+Mike Chen,StartupXYZ,Founder,mike@startupxyz.com,Fintech,10-50,New York NY
+Lisa Rodriguez,MarketingPro,Marketing Director,lisa@marketingpro.com,Marketing,500-1000,Chicago IL
+David Kim,CloudTech Solutions,CTO,david@cloudtech.com,Cloud Computing,100-500,Seattle WA
