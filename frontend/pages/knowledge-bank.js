@@ -340,22 +340,29 @@ export default function KnowledgeBank() {
                   </div>
 
                   {/* Content Preview */}
-                  {content.company_info && (
-                    <div className="mt-4 pt-4 border-t border-gray-100">
-                      <h4 className="text-sm font-medium text-gray-900 mb-2">Content Preview:</h4>
-                      <div className="text-xs text-gray-600 space-y-1">
-                        {content.company_info.name && (
-                          <p><strong>Company:</strong> {content.company_info.name}</p>
-                        )}
-                        {content.company_info.industry && (
-                          <p><strong>Industry:</strong> {content.company_info.industry}</p>
-                        )}
-                        {content.sales_approach && (
-                          <p><strong>Sales Approach:</strong> {content.sales_approach.substring(0, 100)}...</p>
-                        )}
-                      </div>
-                    </div>
-                  )}
+                  {(() => {
+                    try {
+                      const content = JSON.parse(document.extracted_content || '{}');
+                      return content.company_info && (
+                        <div className="mt-4 pt-4 border-t border-gray-100">
+                          <h4 className="text-sm font-medium text-gray-900 mb-2">Content Preview:</h4>
+                          <div className="text-xs text-gray-600 space-y-1">
+                            {content.company_info.name && (
+                              <p><strong>Company:</strong> {content.company_info.name}</p>
+                            )}
+                            {content.company_info.industry && (
+                              <p><strong>Industry:</strong> {content.company_info.industry}</p>
+                            )}
+                            {content.sales_approach && (
+                              <p><strong>Sales Approach:</strong> {content.sales_approach.substring(0, 100)}...</p>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    } catch (e) {
+                      return null;
+                    }
+                  })()}
                 </div>
               );
             })}
