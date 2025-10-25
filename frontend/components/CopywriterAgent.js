@@ -13,6 +13,10 @@ export default function CopywriterAgent({ isOpen, onClose, campaigns = [], onGoB
   const [error, setError] = useState(null);
   const [activeTab, setActiveTab] = useState('personalize');
   const [userTemplate, setUserTemplate] = useState('');
+  
+  // Phase 3: Adaptive features
+  const [useAdaptive, setUseAdaptive] = useState(true);
+  const [adaptiveMetadata, setAdaptiveMetadata] = useState(null);
 
   // Sample lead data for testing (in real app, this would come from campaigns)
   const sampleLeads = [
@@ -59,6 +63,7 @@ export default function CopywriterAgent({ isOpen, onClose, campaigns = [], onGoB
 
     setIsGenerating(true);
     setError(null);
+    setAdaptiveMetadata(null);
 
     try {
       const campaignContext = selectedCampaign ? {
@@ -67,18 +72,21 @@ export default function CopywriterAgent({ isOpen, onClose, campaigns = [], onGoB
         target_audience: selectedCampaign.target_audience
       } : null;
 
+      const requestBody = {
+        lead_data: selectedLead,
+        message_type: messageType,
+        campaign_context: campaignContext,
+        user_template: activeTab === 'template' ? userTemplate.trim() : null,
+        use_adaptive: useAdaptive
+      };
+
       const response = await fetch('/api/copywriter/personalize-message', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${session?.accessToken || 'demo_token'}`
         },
-        body: JSON.stringify({
-          lead_data: selectedLead,
-          message_type: messageType,
-          campaign_context: campaignContext,
-          user_template: activeTab === 'template' ? userTemplate.trim() : null
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       const data = await response.json();
@@ -88,6 +96,11 @@ export default function CopywriterAgent({ isOpen, onClose, campaigns = [], onGoB
       }
 
       setResults({ type: 'personalize', data });
+      
+      // Phase 3: Store adaptive metadata if available
+      if (useAdaptive && data.adaptive_metadata) {
+        setAdaptiveMetadata(data.adaptive_metadata);
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -309,6 +322,37 @@ export default function CopywriterAgent({ isOpen, onClose, campaigns = [], onGoB
             </select>
           </div>
 
+          {/* Phase 3: Adaptive Features Toggle */}
+          <div className="mb-6 bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-200 rounded-lg p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">🧠 Phase 3: Adaptive Intelligence</h3>
+                <p className="text-sm text-gray-600">Enable market-aware copywriting with knowledge fusion</p>
+              </div>
+              <label className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  checked={useAdaptive}
+                  onChange={(e) => setUseAdaptive(e.target.checked)}
+                  className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                />
+                <span className="text-sm font-medium text-gray-700">Enable Adaptive Mode</span>
+              </label>
+            </div>
+            
+            {useAdaptive && (
+              <div className="mt-3 text-sm text-gray-600">
+                <p>✨ <strong>Enhanced Features:</strong></p>
+                <ul className="list-disc list-inside ml-4 space-y-1">
+                  <li>Market-aware messaging</li>
+                  <li>Knowledge fusion from documents and prompts</li>
+                  <li>Intelligent model selection</li>
+                  <li>Enhanced personalization scoring</li>
+                </ul>
+              </div>
+            )}
+          </div>
+
           {/* Tab Content */}
           {activeTab === 'personalize' && (
             <div className="space-y-4">
@@ -524,6 +568,63 @@ export default function CopywriterAgent({ isOpen, onClose, campaigns = [], onGoB
                       >
                         📋 Copy to Clipboard
                       </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Phase 3: Adaptive Intelligence Results */}
+              {results.type === 'personalize' && useAdaptive && adaptiveMetadata && (
+                <div className="bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-200 rounded-lg p-4">
+                  <h3 className="text-lg font-semibold text-purple-900 mb-3">🧠 Phase 3: Adaptive Intelligence Results</h3>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+                    <div className="bg-white rounded-lg p-3 border border-purple-200">
+                      <div className="flex items-center space-x-2">
+                        <span className="text-lg">🎯</span>
+                        <div>
+                          <p className="text-sm font-medium text-gray-900">Strategy Used</p>
+                          <p className="text-xs text-gray-600 capitalize">{results.data.strategy_used || 'hybrid'}</p>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="bg-white rounded-lg p-3 border border-purple-200">
+                      <div className="flex items-center space-x-2">
+                        <span className="text-lg">📊</span>
+                        <div>
+                          <p className="text-sm font-medium text-gray-900">Knowledge Level</p>
+                          <p className="text-xs text-gray-600 capitalize">{results.data.knowledge_level || 'medium'}</p>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="bg-white rounded-lg p-3 border border-purple-200">
+                      <div className="flex items-center space-x-2">
+                        <span className="text-lg">🎯</span>
+                        <div>
+                          <p className="text-sm font-medium text-gray-900">Confidence Score</p>
+                          <p className="text-xs text-gray-600">{Math.round((results.data.confidence_score || 0.7) * 100)}%</p>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="bg-white rounded-lg p-3 border border-purple-200">
+                      <div className="flex items-center space-x-2">
+                        <span className="text-lg">📈</span>
+                        <div>
+                          <p className="text-sm font-medium text-gray-900">Market Awareness</p>
+                          <p className="text-xs text-gray-600">{Math.round((results.data.market_awareness_score || 0.7) * 100)}%</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Adaptive Execution Details */}
+                  <div className="bg-white rounded-lg p-3 border border-purple-200">
+                    <h4 className="font-medium text-purple-800 mb-2">⚡ Adaptive Execution Details</h4>
+                    <div className="text-sm text-gray-700 space-y-1">
+                      <p><strong>Assessment:</strong> {adaptiveMetadata.assessment?.level || 'Medium'} knowledge level detected</p>
+                      <p><strong>Strategy Plan:</strong> {adaptiveMetadata.strategy_plan?.strategy || 'Hybrid'} approach selected</p>
+                      <p><strong>Execution Result:</strong> {adaptiveMetadata.execution_result?.strategy_metadata?.strategy_used || 'Adaptive'} execution completed</p>
+                      <p><strong>Market Context:</strong> {adaptiveMetadata.market_context ? 'Applied' : 'Not available'}</p>
                     </div>
                   </div>
                 </div>

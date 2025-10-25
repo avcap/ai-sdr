@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useSession } from 'next-auth/react';
 
 export default function ProspectorAgent({ campaigns, onLeadsGenerated }) {
@@ -8,6 +8,10 @@ export default function ProspectorAgent({ campaigns, onLeadsGenerated }) {
   const [result, setResult] = useState(null);
   const [selectedCampaign, setSelectedCampaign] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  
+  // Phase 3: Adaptive features
+  const [useAdaptive, setUseAdaptive] = useState(true);
+  const [adaptiveMetadata, setAdaptiveMetadata] = useState(null);
 
   const handleGenerateLeads = async () => {
     if (!prompt.trim()) {
@@ -17,20 +21,31 @@ export default function ProspectorAgent({ campaigns, onLeadsGenerated }) {
 
     setIsGenerating(true);
     setResult(null);
+    setAdaptiveMetadata(null);
 
     try {
+      const requestBody = { 
+        prompt,
+        use_adaptive: useAdaptive
+      };
+
       const response = await fetch('/api/prospector/generate-leads', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${session?.accessToken || 'demo_token'}`
         },
-        body: JSON.stringify({ prompt })
+        body: JSON.stringify(requestBody)
       });
 
       if (response.ok) {
         const data = await response.json();
         setResult(data);
+        
+        // Phase 3: Store adaptive metadata if available
+        if (useAdaptive && data.adaptive_metadata) {
+          setAdaptiveMetadata(data.adaptive_metadata);
+        }
       } else {
         const error = await response.json();
         alert(`Error: ${error.detail || 'Failed to generate leads'}`);
@@ -155,6 +170,37 @@ export default function ProspectorAgent({ campaigns, onLeadsGenerated }) {
         </div>
       </div>
 
+      {/* Phase 3: Adaptive Features Toggle */}
+      <div className="mb-6 bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-200 rounded-lg p-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900">🧠 Phase 3: Adaptive Intelligence</h3>
+            <p className="text-sm text-gray-600">Enable market-aware prospecting with knowledge fusion</p>
+          </div>
+          <label className="flex items-center space-x-2">
+            <input
+              type="checkbox"
+              checked={useAdaptive}
+              onChange={(e) => setUseAdaptive(e.target.checked)}
+              className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+            />
+            <span className="text-sm font-medium text-gray-700">Enable Adaptive Mode</span>
+          </label>
+        </div>
+        
+        {useAdaptive && (
+          <div className="mt-3 text-sm text-gray-600">
+            <p>✨ <strong>Enhanced Features:</strong></p>
+            <ul className="list-disc list-inside ml-4 space-y-1">
+              <li>Market intelligence integration</li>
+              <li>Knowledge fusion from documents and prompts</li>
+              <li>Adaptive strategy selection</li>
+              <li>Real-time market context</li>
+            </ul>
+          </div>
+        )}
+      </div>
+
       {/* Generate Button */}
       <div className="mb-6">
         <button
@@ -180,6 +226,80 @@ export default function ProspectorAgent({ campaigns, onLeadsGenerated }) {
               <div><strong>Location:</strong> {result.criteria.location}</div>
             </div>
           </div>
+
+          {/* Phase 3: Adaptive Intelligence Results */}
+          {useAdaptive && adaptiveMetadata && (
+            <div className="mb-4 bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-200 rounded-lg p-4">
+              <h4 className="text-md font-semibold text-purple-900 mb-3">🧠 Phase 3: Adaptive Intelligence Results</h4>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+                <div className="bg-white rounded-lg p-3 border border-purple-200">
+                  <div className="flex items-center space-x-2">
+                    <span className="text-lg">🎯</span>
+                    <div>
+                      <p className="text-sm font-medium text-gray-900">Strategy Used</p>
+                      <p className="text-xs text-gray-600 capitalize">{result.strategy_used || 'hybrid'}</p>
+                    </div>
+                  </div>
+                </div>
+                <div className="bg-white rounded-lg p-3 border border-purple-200">
+                  <div className="flex items-center space-x-2">
+                    <span className="text-lg">📊</span>
+                    <div>
+                      <p className="text-sm font-medium text-gray-900">Knowledge Level</p>
+                      <p className="text-xs text-gray-600 capitalize">{result.knowledge_level || 'medium'}</p>
+                    </div>
+                  </div>
+                </div>
+                <div className="bg-white rounded-lg p-3 border border-purple-200">
+                  <div className="flex items-center space-x-2">
+                    <span className="text-lg">🎯</span>
+                    <div>
+                      <p className="text-sm font-medium text-gray-900">Confidence Score</p>
+                      <p className="text-xs text-gray-600">{Math.round((result.confidence_score || 0.7) * 100)}%</p>
+                    </div>
+                  </div>
+                </div>
+                <div className="bg-white rounded-lg p-3 border border-purple-200">
+                  <div className="flex items-center space-x-2">
+                    <span className="text-lg">📈</span>
+                    <div>
+                      <p className="text-sm font-medium text-gray-900">Market Intelligence</p>
+                      <p className="text-xs text-gray-600">Enhanced</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Market Intelligence Details */}
+              {result.market_intelligence && (
+                <div className="bg-white rounded-lg p-3 border border-purple-200 mb-3">
+                  <h5 className="font-medium text-purple-800 mb-2">📊 Market Intelligence Applied</h5>
+                  <div className="text-sm text-gray-700 space-y-1">
+                    {result.market_intelligence.industry_trends && (
+                      <p><strong>Industry Trends:</strong> {result.market_intelligence.industry_trends.trends?.join(', ') || 'Market analysis applied'}</p>
+                    )}
+                    {result.market_intelligence.market_sentiment && (
+                      <p><strong>Market Sentiment:</strong> {result.market_intelligence.market_sentiment.sentiment || 'Neutral'} ({Math.round((result.market_intelligence.market_sentiment.confidence || 0.5) * 100)}% confidence)</p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Adaptive Execution Details */}
+              <div className="bg-white rounded-lg p-3 border border-purple-200">
+                <h5 className="font-medium text-purple-800 mb-2">⚡ Adaptive Execution Details</h5>
+                <div className="text-sm text-gray-700 space-y-1">
+                  <p><strong>Assessment:</strong> {adaptiveMetadata.assessment?.level || 'Medium'} knowledge level detected</p>
+                  <p><strong>Strategy Plan:</strong> {adaptiveMetadata.strategy_plan?.strategy || 'Hybrid'} approach selected</p>
+                  <p><strong>Execution Result:</strong> {adaptiveMetadata.execution_result?.strategy_metadata?.strategy_used || 'Adaptive'} execution completed</p>
+                  {adaptiveMetadata.pipeline_performance && (
+                    <p><strong>Performance:</strong> {adaptiveMetadata.pipeline_performance.total_time || 0}s execution time</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Preview of leads */}
           <div className="mb-4">

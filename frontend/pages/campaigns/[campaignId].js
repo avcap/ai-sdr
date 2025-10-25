@@ -69,6 +69,7 @@ export default function CampaignDetail() {
   }
 
   const handleFileUpload = async (file) => {
+    try {
       const formData = new FormData()
       formData.append('file', file)
 
@@ -81,14 +82,14 @@ export default function CampaignDetail() {
             'Content-Type': 'multipart/form-data'
           }
         }
-      )
+      );
 
-      toast.success(`Successfully uploaded ${response.data.leads_created} leads`)
-      setShowUploadModal(false)
-      fetchCampaignData() // Refresh data
+      toast.success(`Successfully uploaded ${response.data.leads_created} leads`);
+      setShowUploadModal(false);
+      fetchCampaignData(); // Refresh data
     } catch (error) {
-      console.error('Error uploading leads:', error)
-      toast.error('Failed to upload leads file')
+      console.error('Error uploading leads:', error);
+      toast.error('Failed to upload leads file');
     }
   }
 

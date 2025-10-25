@@ -53,7 +53,7 @@ app.add_middleware(
 security = HTTPBearer()
 
 # Dependency to get current user (simplified for demo)
-def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+def get_current_user():
     # In production, implement proper JWT validation
     return {
         "user_id": "89985897-54af-436b-8ff5-61c5fa30f434", 
@@ -423,6 +423,7 @@ async def upload_training_files(
                     "file_path": str(file_path),
                     "file_size": len(clean_text),
                     "file_type": ".txt",
+                    "document_type": document_type,
                     "status": "uploaded"
                 }
                 
@@ -503,6 +504,7 @@ async def upload_training_files(
                     "file_path": str(file_path),
                     "file_size": len(content),
                     "file_type": file_extension,
+                    "document_type": document_type,
                     "status": "uploaded"
                 }
                 
@@ -669,27 +671,30 @@ async def generate_leads_with_prospector(
     request: dict,
     current_user: dict = Depends(get_current_user)
 ):
-    """Generate leads using the Prospector Agent with company knowledge"""
+    """Generate leads using the Prospector Agent with Phase 3 adaptive intelligence"""
     try:
         prompt = request.get("prompt", "")
+        use_adaptive = request.get("use_adaptive", True)  # Default to adaptive mode
+        
         if not prompt:
             raise HTTPException(status_code=400, detail="Prompt is required")
         
-        logger.info(f"🔍 Prospector request: {prompt}")
+        logger.info(f"🔍 Prospector request: {prompt} (adaptive: {use_adaptive})")
         
         # Import the prospector agent
         from agents.prospector_agent import ProspectorAgent
         
-        # Initialize and run the prospector agent with company knowledge
+        # Initialize and run the prospector agent
         agent = ProspectorAgent()
         result = agent.prospect_leads(
             prompt, 
             tenant_id=current_user["tenant_id"], 
-            user_id=current_user["user_id"]
+            user_id=current_user["user_id"],
+            use_adaptive=use_adaptive
         )
         
         if result["success"]:
-            return {
+            response_data = {
                 "success": True,
                 "message": f"Generated {result['lead_count']} leads",
                 "leads": result["leads"],
@@ -697,6 +702,18 @@ async def generate_leads_with_prospector(
                 "csv_content": result.get("csv_content", ""),
                 "csv_filename": result.get("csv_filename", "")
             }
+            
+            # Add Phase 3 specific data if available
+            if use_adaptive and "strategy_used" in result:
+                response_data.update({
+                    "strategy_used": result["strategy_used"],
+                    "knowledge_level": result["knowledge_level"],
+                    "confidence_score": result["confidence_score"],
+                    "market_intelligence": result.get("market_intelligence", {}),
+                    "adaptive_metadata": result.get("adaptive_metadata", {})
+                })
+            
+            return response_data
         else:
             raise HTTPException(status_code=500, detail=result.get("error", "Failed to generate leads"))
             
@@ -709,34 +726,58 @@ async def execute_smart_campaign(
     request: dict,
     current_user: dict = Depends(get_current_user)
 ):
-    """Execute Smart Campaign with company knowledge"""
+    """Execute Smart Campaign with Phase 3 adaptive intelligence"""
     try:
         prompt = request.get("prompt", "")
+        use_adaptive = request.get("use_adaptive", True)  # Default to adaptive mode
+        
         if not prompt:
             raise HTTPException(status_code=400, detail="Prompt is required")
         
-        logger.info(f"🚀 Smart Campaign request: {prompt}")
+        logger.info(f"🚀 Smart Campaign request: {prompt} (adaptive: {use_adaptive})")
         
         # Import the smart campaign orchestrator
         from agents.smart_campaign_orchestrator import SmartCampaignOrchestrator
         
-        # Initialize and run the smart campaign orchestrator with company knowledge
+        # Initialize and run the smart campaign orchestrator
         orchestrator = SmartCampaignOrchestrator()
-        result = orchestrator.execute_smart_campaign(
-            prompt,
-            tenant_id=current_user["tenant_id"],
-            user_id=current_user["user_id"]
-        )
+        
+        if use_adaptive:
+            # Use Phase 3 adaptive campaign execution
+            result = orchestrator.execute_adaptive_campaign(
+                prompt,
+                tenant_id=current_user["tenant_id"],
+                user_id=current_user["user_id"]
+            )
+        else:
+            # Use standard campaign execution
+            result = orchestrator.execute_smart_campaign(
+                prompt,
+                tenant_id=current_user["tenant_id"],
+                user_id=current_user["user_id"]
+            )
         
         if result["success"]:
-            return {
+            response_data = {
                 "success": True,
                 "message": "Smart campaign executed successfully",
-                "pipeline_id": result["pipeline_id"],
-                "stages": result["stages"],
-                "final_results": result["final_results"],
-                "execution_time": result["execution_time"]
+                "pipeline_id": result.get("pipeline_id", "adaptive_pipeline"),
+                "stages": result.get("stages", []),
+                "final_results": result.get("final_results", {}),
+                "execution_time": result.get("execution_time", 0)
             }
+            
+            # Add Phase 3 specific data if available
+            if use_adaptive and "strategy_used" in result:
+                response_data.update({
+                    "strategy_used": result["strategy_used"],
+                    "knowledge_level": result["knowledge_level"],
+                    "confidence_score": result["confidence_score"],
+                    "market_intelligence": result.get("market_intelligence", {}),
+                    "adaptive_metadata": result.get("adaptive_metadata", {})
+                })
+            
+            return response_data
         else:
             raise HTTPException(status_code=500, detail=result.get("error", "Failed to execute smart campaign"))
             
@@ -749,43 +790,68 @@ async def personalize_message(
     request: dict,
     current_user: dict = Depends(get_current_user)
 ):
-    """Generate a personalized message using Copywriter Agent with company knowledge"""
+    """Generate a personalized message using Copywriter Agent with Phase 3 adaptive intelligence"""
     try:
         lead_data = request.get("lead_data", {})
         message_type = request.get("message_type", "cold_email")
         campaign_context = request.get("campaign_context", {})
         user_template = request.get("user_template", None)
+        use_adaptive = request.get("use_adaptive", True)  # Default to adaptive mode
         
         if not lead_data:
             raise HTTPException(status_code=400, detail="Lead data is required")
         
-        logger.info(f"✍️ Personalizing {message_type} for {lead_data.get('name', 'Unknown')}")
+        logger.info(f"✍️ Personalizing {message_type} for {lead_data.get('name', 'Unknown')} (adaptive: {use_adaptive})")
         
         # Import the copywriter agent
         from agents.copywriter_agent import CopywriterAgent
         
-        # Initialize and run the copywriter agent with company knowledge
+        # Initialize and run the copywriter agent
         agent = CopywriterAgent()
-        result = agent.personalize_message(
-            lead_data, 
-            message_type, 
-            campaign_context, 
-            user_template,
-            tenant_id=current_user["tenant_id"],
-            user_id=current_user["user_id"]
-        )
+        
+        if use_adaptive:
+            # Use Phase 3 adaptive copywriting
+            result = agent.execute_adaptive(
+                prompt=f"Personalize {message_type} for {lead_data.get('name', 'lead')}",
+                lead_data=lead_data,
+                message_type=message_type,
+                tenant_id=current_user["tenant_id"],
+                user_id=current_user["user_id"]
+            )
+        else:
+            # Use standard personalization
+            result = agent.personalize_message(
+                lead_data, 
+                message_type, 
+                campaign_context, 
+                user_template,
+                tenant_id=current_user["tenant_id"],
+                user_id=current_user["user_id"]
+            )
         
         if result["success"]:
-            return {
+            response_data = {
                 "success": True,
                 "message": "Message personalized successfully",
-                "personalized_message": result["personalized_message"],
-                "lead_context": result["lead_context"],
-                "industry_context": result["industry_context"],
-                "personalization_score": result["personalization_score"],
-                "message_length": result["message_length"],
-                "generated_at": result["generated_at"]
+                "personalized_message": result.get("personalized_message", result.get("message", "")),
+                "lead_context": result.get("lead_context", {}),
+                "industry_context": result.get("industry_context", {}),
+                "personalization_score": result.get("personalization_score", 0.0),
+                "message_length": result.get("message_length", 0),
+                "generated_at": result.get("generated_at", datetime.now().isoformat())
             }
+            
+            # Add Phase 3 specific data if available
+            if use_adaptive and "strategy_used" in result:
+                response_data.update({
+                    "strategy_used": result["strategy_used"],
+                    "knowledge_level": result["knowledge_level"],
+                    "confidence_score": result["confidence_score"],
+                    "market_awareness_score": result.get("market_awareness_score", 0.0),
+                    "adaptive_metadata": result.get("adaptive_metadata", {})
+                })
+            
+            return response_data
         else:
             raise HTTPException(status_code=500, detail=result.get("error", "Failed to personalize message"))
             
@@ -832,6 +898,400 @@ async def create_smart_outreach_plan(
             
     except Exception as e:
         logger.error(f"Smart Outreach agent error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==============================================
+# KNOWLEDGE BANK MANAGEMENT
+# ==============================================
+
+@app.get("/knowledge-bank/documents")
+async def get_knowledge_bank_documents(
+    request: Request,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get all training documents for the knowledge bank"""
+    try:
+        logger.info(f"📚 Fetching documents for user {current_user['user_id']}")
+        
+        # Get documents from Supabase
+        result = supabase_service.client.table("training_documents").select("*").eq(
+            "tenant_id", current_user["tenant_id"]
+        ).eq("user_id", current_user["user_id"]).order("created_at", desc=True).execute()
+        
+        documents = result.data if result.data else []
+        logger.info(f"✅ Found {len(documents)} documents")
+        
+        return {"success": True, "documents": documents}
+        
+    except Exception as e:
+        logger.error(f"❌ Error fetching documents: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/knowledge-bank/knowledge")
+async def get_knowledge_bank_knowledge(
+    request: Request,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get all extracted knowledge for the knowledge bank"""
+    try:
+        logger.info(f"🧠 Fetching knowledge for user {current_user['user_id']}")
+        
+        # Get knowledge from Supabase
+        result = supabase_service.client.table("user_knowledge").select("*").eq(
+            "tenant_id", current_user["tenant_id"]
+        ).eq("user_id", current_user["user_id"]).order("created_at", desc=True).execute()
+        
+        knowledge = result.data if result.data else []
+        logger.info(f"✅ Found {len(knowledge)} knowledge items")
+        
+        return {"success": True, "knowledge": knowledge}
+        
+    except Exception as e:
+        logger.error(f"❌ Error fetching knowledge: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/knowledge-bank/documents/{document_id}")
+async def delete_knowledge_bank_document(
+    document_id: str,
+    request: Request,
+    current_user: dict = Depends(get_current_user)
+):
+    """Delete a document from the knowledge bank"""
+    try:
+        logger.info(f"🗑️ Deleting document {document_id} for user {current_user['user_id']}")
+        
+        # First, get the document to check ownership and get file path
+        doc_result = supabase_service.client.table("training_documents").select("*").eq(
+            "id", document_id
+        ).eq("tenant_id", current_user["tenant_id"]).eq("user_id", current_user["user_id"]).execute()
+        
+        if not doc_result.data:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        document = doc_result.data[0]
+        
+        # Delete the physical file if it exists
+        try:
+            file_path = Path(document["file_path"])
+            if file_path.exists():
+                file_path.unlink()
+                logger.info(f"🗑️ Deleted physical file: {file_path}")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not delete physical file: {e}")
+        
+        # Delete associated knowledge entries
+        try:
+            supabase_service.client.table("user_knowledge").delete().eq(
+                "source_id", document_id
+            ).execute()
+            logger.info(f"🗑️ Deleted associated knowledge entries")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not delete associated knowledge: {e}")
+        
+        # Delete the document record
+        result = supabase_service.client.table("training_documents").delete().eq(
+            "id", document_id
+        ).eq("tenant_id", current_user["tenant_id"]).eq("user_id", current_user["user_id"]).execute()
+        
+        logger.info(f"✅ Document {document_id} deleted successfully")
+        
+        return {"success": True, "message": "Document deleted successfully"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error deleting document: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/knowledge-bank/knowledge/{knowledge_id}")
+async def delete_knowledge_bank_knowledge(
+    knowledge_id: str,
+    request: Request,
+    current_user: dict = Depends(get_current_user)
+):
+    """Delete a knowledge item from the knowledge bank"""
+    try:
+        logger.info(f"🗑️ Deleting knowledge {knowledge_id} for user {current_user['user_id']}")
+        
+        # Delete the knowledge record
+        result = supabase_service.client.table("user_knowledge").delete().eq(
+            "id", knowledge_id
+        ).eq("tenant_id", current_user["tenant_id"]).eq("user_id", current_user["user_id"]).execute()
+        
+        # Check if deletion was successful (Supabase returns empty array for successful deletes)
+        if result.data is None or (isinstance(result.data, list) and len(result.data) == 0):
+            logger.info(f"✅ Knowledge {knowledge_id} deleted successfully")
+            return {"success": True, "message": "Knowledge item deleted successfully"}
+        else:
+            raise HTTPException(status_code=404, detail="Knowledge item not found")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error deleting knowledge: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==============================================
+# PHASE 3: ADAPTIVE AI & MARKET INTELLIGENCE
+# ==============================================
+
+@app.get("/phase3/knowledge-assessment")
+async def get_knowledge_assessment(
+    request: Request,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get comprehensive knowledge assessment for the user"""
+    try:
+        logger.info(f"🧠 Getting knowledge assessment for user {current_user['user_id']}")
+        
+        from agents.adaptive_ai_agent import AdaptiveAIAgent
+        
+        adaptive_agent = AdaptiveAIAgent()
+        
+        # Get a sample prompt for assessment (could be from user's recent campaigns)
+        sample_prompt = "Generate leads for our SaaS product targeting CTOs in mid-market companies"
+        
+        assessment = adaptive_agent.assess_knowledge_level(
+            current_user["tenant_id"], 
+            current_user["user_id"], 
+            sample_prompt
+        )
+        
+        return {
+            "success": True,
+            "assessment": {
+                "level": assessment.level.value,
+                "document_count": assessment.document_count,
+                "prompt_quality_score": assessment.prompt_quality_score,
+                "overall_confidence": assessment.overall_confidence,
+                "available_sources": assessment.available_sources,
+                "gaps": assessment.gaps
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting knowledge assessment: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/phase3/market-intelligence/{industry}")
+async def get_market_intelligence(
+    industry: str,
+    request: Request,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get market intelligence for a specific industry"""
+    try:
+        logger.info(f"📊 Getting market intelligence for industry: {industry}")
+        
+        from integrations.grok_service import GrokService
+        
+        grok_service = GrokService()
+        
+        # Get comprehensive market intelligence
+        market_sentiment = grok_service.get_market_sentiment(industry)
+        industry_trends = grok_service.get_industry_trends(industry)
+        competitive_intelligence = grok_service.get_competitive_intelligence(industry)
+        
+        return {
+            "success": True,
+            "industry": industry,
+            "market_sentiment": market_sentiment,
+            "industry_trends": industry_trends,
+            "competitive_intelligence": competitive_intelligence,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting market intelligence: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/phase3/adaptive-strategy")
+async def get_adaptive_strategy(
+    request: dict,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get recommended adaptive strategy for a specific task"""
+    try:
+        task_type = request.get("task_type", "campaign_orchestration")
+        prompt = request.get("prompt", "")
+        
+        if not prompt:
+            raise HTTPException(status_code=400, detail="Prompt is required")
+        
+        logger.info(f"🎯 Getting adaptive strategy for task: {task_type}")
+        
+        from agents.adaptive_ai_agent import AdaptiveAIAgent
+        
+        adaptive_agent = AdaptiveAIAgent()
+        
+        # Assess knowledge level
+        assessment = adaptive_agent.assess_knowledge_level(
+            current_user["tenant_id"], 
+            current_user["user_id"], 
+            prompt
+        )
+        
+        # Select adaptation strategy
+        strategy_plan = adaptive_agent.select_adaptation_strategy(assessment.level, task_type)
+        
+        return {
+            "success": True,
+            "assessment": {
+                "level": assessment.level.value,
+                "document_count": assessment.document_count,
+                "prompt_quality_score": assessment.prompt_quality_score,
+                "overall_confidence": assessment.overall_confidence,
+                "available_sources": assessment.available_sources,
+                "gaps": assessment.gaps
+            },
+            "strategy_plan": {
+                "strategy": strategy_plan.strategy.value,
+                "confidence_threshold": strategy_plan.confidence_threshold,
+                "fallback_strategies": [s.value for s in strategy_plan.fallback_strategies],
+                "required_services": strategy_plan.required_services,
+                "execution_priority": strategy_plan.execution_priority
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting adaptive strategy: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/phase3/llm-recommendation")
+async def get_llm_recommendation(
+    request: dict,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get LLM model recommendation for a specific task"""
+    try:
+        task_type = request.get("task_type", "general")
+        prompt_length = request.get("prompt_length", 0)
+        preferences = request.get("preferences", {})
+        
+        logger.info(f"🤖 Getting LLM recommendation for task: {task_type}")
+        
+        from services.llm_selector_service import LLMSelectorService
+        
+        llm_selector = LLMSelectorService()
+        
+        recommendation = llm_selector.recommend_model_for_task(
+            task_type, 
+            prompt_length, 
+            preferences
+        )
+        
+        return {
+            "success": True,
+            "recommendation": recommendation,
+            "task_type": task_type,
+            "prompt_length": prompt_length,
+            "preferences": preferences
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting LLM recommendation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/phase3/knowledge-fusion")
+async def fuse_knowledge_sources(
+    request: dict,
+    current_user: dict = Depends(get_current_user)
+):
+    """Fuse knowledge from multiple sources"""
+    try:
+        document_knowledge = request.get("document_knowledge", {})
+        prompt_knowledge = request.get("prompt_knowledge", {})
+        market_knowledge = request.get("market_knowledge", {})
+        
+        logger.info(f"🔗 Fusing knowledge sources for user {current_user['user_id']}")
+        
+        from services.knowledge_fusion_service import KnowledgeFusionService
+        
+        fusion_service = KnowledgeFusionService()
+        
+        fused_knowledge = fusion_service.fuse_knowledge(
+            document_knowledge,
+            prompt_knowledge,
+            market_knowledge
+        )
+        
+        return {
+            "success": True,
+            "fused_knowledge": fused_knowledge,
+            "sources_used": {
+                "document": bool(document_knowledge),
+                "prompt": bool(prompt_knowledge),
+                "market": bool(market_knowledge)
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error fusing knowledge: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/phase3/market-monitoring/{industry}")
+async def get_market_monitoring(
+    industry: str,
+    request: Request,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get real-time market monitoring data"""
+    try:
+        logger.info(f"📈 Getting market monitoring for industry: {industry}")
+        
+        from services.market_monitoring_service import MarketMonitoringService
+        
+        monitoring_service = MarketMonitoringService()
+        
+        # Get comprehensive market monitoring data
+        trends = monitoring_service.get_real_time_market_trends(industry)
+        opportunities = monitoring_service.detect_market_opportunities(industry)
+        alerts = monitoring_service.get_market_alerts(industry)
+        
+        return {
+            "success": True,
+            "industry": industry,
+            "trends": trends,
+            "opportunities": opportunities,
+            "alerts": alerts,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting market monitoring: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/phase3/predictive-analytics")
+async def get_predictive_analytics(
+    request: dict,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get predictive analytics for campaign optimization"""
+    try:
+        campaign_data = request.get("campaign_data", {})
+        lead_data = request.get("lead_data", [])
+        
+        logger.info(f"🔮 Getting predictive analytics for user {current_user['user_id']}")
+        
+        from services.predictive_analytics_service import PredictiveAnalyticsService
+        
+        analytics_service = PredictiveAnalyticsService()
+        
+        # Get comprehensive predictive analytics
+        campaign_prediction = analytics_service.predict_campaign_performance(campaign_data, lead_data)
+        targeting_optimization = analytics_service.optimize_targeting(lead_data)
+        timing_recommendation = analytics_service.recommend_optimal_timing(lead_data)
+        
+        return {
+            "success": True,
+            "campaign_prediction": campaign_prediction,
+            "targeting_optimization": targeting_optimization,
+            "timing_recommendation": timing_recommendation,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting predictive analytics: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":

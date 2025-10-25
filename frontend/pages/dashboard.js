@@ -346,6 +346,13 @@ export default function Dashboard() {
                   <span>Train Your Team</span>
                 </button>
                 <button
+                  onClick={() => router.push('/knowledge-bank')}
+                  className="bg-gradient-to-r from-orange-600 to-red-600 text-white px-6 py-2 rounded-lg hover:from-orange-700 hover:to-red-700 transition-all transform hover:scale-105 shadow-lg flex items-center space-x-2"
+                >
+                  <span>📚</span>
+                  <span>Knowledge Bank</span>
+                </button>
+                <button
                   onClick={() => signOut({ callbackUrl: '/auth/signin' })}
                   className="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition-colors"
                 >

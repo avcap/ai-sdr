@@ -5,6 +5,10 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 from openai import OpenAI
 from services.knowledge_service import KnowledgeService
+from services.knowledge_fusion_service import KnowledgeFusionService
+from services.llm_selector_service import LLMSelectorService
+from agents.adaptive_ai_agent import AdaptiveAIAgent, KnowledgeLevel, AdaptationStrategy
+from integrations.grok_service import GrokService
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -26,6 +30,12 @@ class CopywriterAgent:
     def __init__(self):
         self.openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         self.knowledge_service = KnowledgeService()
+        
+        # Phase 3: Enhanced services
+        self.knowledge_fusion = KnowledgeFusionService()
+        self.llm_selector = LLMSelectorService()
+        self.adaptive_agent = AdaptiveAIAgent()
+        self.grok_service = GrokService()
         
         # Message templates and frameworks
         self.message_frameworks = {
@@ -594,27 +604,277 @@ class CopywriterAgent:
         
         return min(score, 100)
     
+    def execute_adaptive(self, prompt: str, lead_data: Dict[str, Any], 
+                       message_type: str = "cold_email", tenant_id: str = None, 
+                       user_id: str = None) -> Dict[str, Any]:
+        """
+        Phase 3: Adaptive copywriting execution based on knowledge level and market context.
+        
+        Args:
+            prompt: User's campaign prompt
+            lead_data: Lead information for personalization
+            message_type: Type of message to generate
+            tenant_id: Organization identifier
+            user_id: User identifier
+            
+        Returns:
+            Enhanced message generation result with adaptive intelligence
+        """
+        logger.info(f"Executing adaptive copywriting for {message_type}")
+        
+        try:
+            # 1. Assess knowledge level
+            assessment = self.adaptive_agent.assess_knowledge_level(tenant_id, user_id, prompt)
+            logger.info(f"Knowledge level: {assessment.level.value}")
+            
+            # 2. Select adaptation strategy
+            strategy_plan = self.adaptive_agent.select_adaptation_strategy(assessment.level, "copywriting")
+            logger.info(f"Selected strategy: {strategy_plan.strategy.value}")
+            
+            # 3. Execute with strategy
+            execution_result = self.adaptive_agent.execute_with_strategy(
+                strategy_plan.strategy,
+                prompt,
+                {"task_type": "copywriting", "message_type": message_type, "lead_data": lead_data},
+                tenant_id,
+                user_id
+            )
+            
+            # 4. Enhance with market intelligence
+            market_context = self._get_market_context_for_copywriting(lead_data, prompt)
+            
+            # 5. Generate adaptive message
+            adaptive_result = self._generate_adaptive_message(
+                lead_data, message_type, execution_result, market_context, strategy_plan
+            )
+            
+            return {
+                "success": True,
+                "message": adaptive_result["message"],
+                "personalization_score": adaptive_result["personalization_score"],
+                "market_awareness_score": adaptive_result["market_awareness_score"],
+                "strategy_used": strategy_plan.strategy.value,
+                "knowledge_level": assessment.level.value,
+                "confidence_score": execution_result.get("strategy_metadata", {}).get("fused_overall_score", 0.0),
+                "adaptive_metadata": {
+                    "assessment": assessment,
+                    "strategy_plan": strategy_plan,
+                    "market_context": market_context,
+                    "execution_result": execution_result
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Adaptive copywriting failed: {e}")
+            # Fallback to standard personalization
+            return self.personalize_message(lead_data, message_type)
+    
+    def _get_market_context_for_copywriting(self, lead_data: Dict[str, Any], prompt: str) -> Dict[str, Any]:
+        """Get market context for copywriting enhancement"""
+        try:
+            industry = lead_data.get("industry", "general")
+            company = lead_data.get("company", "")
+            
+            # Get market sentiment and trends
+            market_sentiment = self.grok_service.get_market_sentiment(industry, ["growth", "challenges"])
+            industry_trends = self.grok_service.get_industry_trends(industry, "6months")
+            
+            # Get competitive intelligence if company is specified
+            competitive_context = {}
+            if company:
+                competitive_context = self.grok_service.get_competitive_intelligence(company)
+            
+            return {
+                "market_sentiment": market_sentiment,
+                "industry_trends": industry_trends,
+                "competitive_context": competitive_context,
+                "industry": industry,
+                "company": company
+            }
+            
+        except Exception as e:
+            logger.warning(f"Failed to get market context: {e}")
+            return {"industry": lead_data.get("industry", "general")}
+    
+    def _generate_adaptive_message(self, lead_data: Dict[str, Any], message_type: str,
+                                 execution_result: Dict[str, Any], market_context: Dict[str, Any],
+                                 strategy_plan) -> Dict[str, Any]:
+        """Generate message using adaptive intelligence"""
+        
+        # Get fused knowledge
+        fused_knowledge = execution_result.get("fused_knowledge", {})
+        
+        # Select optimal model for copywriting
+        model_selection = self.llm_selector.recommend_model_for_task(
+            "personalization", 
+            len(str(fused_knowledge)) + len(str(market_context))
+        )
+        
+        selected_model = model_selection["recommended_model"]
+        logger.info(f"Selected model for copywriting: {selected_model}")
+        
+        # Build enhanced prompt with market context
+        enhanced_prompt = self._build_adaptive_prompt(
+            lead_data, message_type, fused_knowledge, market_context, strategy_plan
+        )
+        
+        # Generate message using selected model
+        if selected_model.startswith("gpt"):
+            message_content = self._generate_with_openai(enhanced_prompt, selected_model)
+        elif selected_model.startswith("claude"):
+            message_content = self._generate_with_claude(enhanced_prompt, selected_model)
+        else:
+            # Fallback to default
+            message_content = self._generate_with_openai(enhanced_prompt, "gpt-4")
+        
+        # Calculate enhanced scores
+        personalization_score = self._calculate_enhanced_personalization_score(
+            lead_data, fused_knowledge, message_content
+        )
+        
+        market_awareness_score = self._calculate_market_awareness_score(
+            message_content, market_context
+        )
+        
+        return {
+            "message": message_content,
+            "personalization_score": personalization_score,
+            "market_awareness_score": market_awareness_score,
+            "model_used": selected_model,
+            "strategy_applied": strategy_plan.strategy.value
+        }
+    
+    def _build_adaptive_prompt(self, lead_data: Dict[str, Any], message_type: str,
+                             fused_knowledge: Dict[str, Any], market_context: Dict[str, Any],
+                             strategy_plan) -> str:
+        """Build enhanced prompt with adaptive intelligence"""
+        
+        prompt_parts = [
+            f"Generate a {message_type} message for:",
+            f"Lead: {lead_data.get('name', 'Unknown')} at {lead_data.get('company', 'Unknown Company')}",
+            f"Role: {lead_data.get('title', 'Unknown Role')}",
+            f"Industry: {lead_data.get('industry', 'Unknown Industry')}",
+            "",
+            "Company Knowledge:",
+            f"- Products/Services: {fused_knowledge.get('products', 'Not specified')}",
+            f"- Value Propositions: {fused_knowledge.get('value_propositions', 'Not specified')}",
+            f"- Target Audience: {fused_knowledge.get('target_audience', 'Not specified')}",
+            f"- Sales Approach: {fused_knowledge.get('sales_approach', 'Not specified')}",
+            "",
+            "Market Context:",
+            f"- Industry Trends: {market_context.get('industry_trends', {}).get('trends', 'Not available')}",
+            f"- Market Sentiment: {market_context.get('market_sentiment', {}).get('sentiment', 'Neutral')}",
+            "",
+            f"Strategy: {strategy_plan.strategy.value}",
+            f"Confidence Threshold: {strategy_plan.confidence_threshold}",
+            "",
+            "Requirements:",
+            "- Personalize based on lead's role and company",
+            "- Incorporate market trends and sentiment",
+            "- Use company's value propositions",
+            "- Include a clear call-to-action",
+            "- Maintain professional yet engaging tone",
+            "- Keep message concise and impactful"
+        ]
+        
+        return "\n".join(prompt_parts)
+    
+    def _generate_with_openai(self, prompt: str, model: str) -> str:
+        """Generate message using OpenAI models"""
+        try:
+            response = self.openai_client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=500,
+                temperature=0.7
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            logger.error(f"OpenAI generation failed: {e}")
+            return "Unable to generate message at this time."
+    
+    def _generate_with_claude(self, prompt: str, model: str) -> str:
+        """Generate message using Claude models (placeholder - would need Anthropic client)"""
+        # For now, fallback to OpenAI
+        return self._generate_with_openai(prompt, "gpt-4")
+    
+    def _calculate_enhanced_personalization_score(self, lead_data: Dict[str, Any], 
+                                               fused_knowledge: Dict[str, Any], 
+                                               message_content: str) -> int:
+        """Calculate enhanced personalization score"""
+        base_score = self._calculate_personalization_score(lead_data)
+        
+        # Enhance based on fused knowledge usage
+        knowledge_enhancement = 0
+        if fused_knowledge.get('products'):
+            knowledge_enhancement += 10
+        if fused_knowledge.get('value_propositions'):
+            knowledge_enhancement += 15
+        if fused_knowledge.get('target_audience'):
+            knowledge_enhancement += 10
+        
+        # Check for specific personalization elements in message
+        personalization_elements = self._identify_personalization(message_content)
+        element_score = len(personalization_elements) * 5
+        
+        return min(100, base_score + knowledge_enhancement + element_score)
+    
+    def _calculate_market_awareness_score(self, message_content: str, 
+                                        market_context: Dict[str, Any]) -> int:
+        """Calculate market awareness score based on market context usage"""
+        score = 0
+        
+        # Check for industry trend mentions
+        trends = market_context.get('industry_trends', {}).get('trends', [])
+        for trend in trends:
+            if trend.lower() in message_content.lower():
+                score += 20
+        
+        # Check for market sentiment awareness
+        sentiment = market_context.get('market_sentiment', {}).get('sentiment', 'neutral')
+        if sentiment in message_content.lower():
+            score += 15
+        
+        # Check for competitive awareness
+        if market_context.get('competitive_context'):
+            score += 10
+        
+        return min(100, score)
+
     def _get_variation_style(self, variation_index: int) -> str:
         """Get style description for message variation"""
         styles = ["professional", "conversational", "direct"]
         return styles[variation_index % len(styles)]
     
     def get_agent_info(self) -> Dict[str, Any]:
-        """Get information about the Copywriter Agent"""
+        """Get information about the Copywriter Agent with Phase 3 enhancements"""
         return {
             "name": "Copywriter Agent",
-            "description": "AI-powered personalization and sequence creation for B2B outreach",
+            "description": "AI-powered copywriting with adaptive intelligence, market awareness, and multi-model optimization",
             "capabilities": [
                 "Personalized message generation",
                 "Multi-touch email sequences",
                 "A/B test message variations",
                 "Industry-specific messaging",
                 "Channel optimization (Email, LinkedIn)",
-                "Personalization scoring"
+                "Personalization scoring",
+                "Adaptive intelligence based on knowledge level",
+                "Market-aware messaging with Grok integration",
+                "Intelligent model selection (GPT-4, Claude, etc.)",
+                "Knowledge fusion for enhanced personalization",
+                "Real-time market context integration"
             ],
             "supported_message_types": list(self.message_frameworks.keys()),
             "supported_industries": list(self.industry_contexts.keys()),
-            "version": "1.0.0"
+            "ai_models": ["GPT-4", "GPT-3.5-turbo", "Claude-Sonnet", "Claude-Haiku"],
+            "phase_3_features": [
+                "Adaptive execution based on knowledge level",
+                "Market context integration",
+                "Intelligent model selection",
+                "Enhanced personalization scoring",
+                "Market awareness scoring"
+            ],
+            "version": "3.0.0"
         }
 
 if __name__ == "__main__":

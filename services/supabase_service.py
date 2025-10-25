@@ -136,16 +136,58 @@ class SupabaseService:
             # Convert the knowledge data to match our table structure
             import json
             
+            # Extract meaningful subject from knowledge data
+            subject = "Company Knowledge"  # Default
+            if isinstance(knowledge_data, dict):
+                if 'company_info' in knowledge_data and knowledge_data['company_info']:
+                    company_name = knowledge_data['company_info'].get('company_name', '')
+                    if company_name and company_name != 'Not specified':
+                        subject = f"{company_name} Knowledge"
+                    elif knowledge_data.get('document_type'):
+                        subject = f"{knowledge_data['document_type'].replace('_', ' ').title()} Knowledge"
+                elif knowledge_data.get('document_type'):
+                    subject = f"{knowledge_data['document_type'].replace('_', ' ').title()} Knowledge"
+            
+            # Determine confidence based on content quality
+            confidence_score = 0.8  # Default
+            if isinstance(knowledge_data, dict):
+                # Higher confidence if we have more structured data
+                structured_fields = ['company_info', 'products', 'value_propositions', 'sales_approach']
+                filled_fields = sum(1 for field in structured_fields if knowledge_data.get(field))
+                if filled_fields >= 3:
+                    confidence_score = 0.9
+                elif filled_fields >= 2:
+                    confidence_score = 0.8
+                else:
+                    confidence_score = 0.7
+            
+            # Generate tags based on content
+            tags = ["company", "sales", "products"]  # Default
+            if isinstance(knowledge_data, dict):
+                content_tags = []
+                if knowledge_data.get('company_info'):
+                    content_tags.append("company")
+                if knowledge_data.get('products'):
+                    content_tags.append("products")
+                if knowledge_data.get('sales_approach') or knowledge_data.get('sales_methodologies'):
+                    content_tags.append("sales")
+                if knowledge_data.get('document_type') == 'sales_training':
+                    content_tags.append("training")
+                if knowledge_data.get('document_type') == 'industry_knowledge':
+                    content_tags.append("industry")
+                if content_tags:
+                    tags = content_tags
+            
             # Preserve the original knowledge structure instead of converting to old format
             knowledge_record = {
                 "tenant_id": tenant_id,
                 "user_id": user_id,
-                "subject": "Company Knowledge",
+                "subject": subject,
                 "content": json.dumps(knowledge_data, indent=2),  # Save the full knowledge structure
                 "source_type": "extracted",
                 "source_id": None,
-                "confidence_score": 0.8,
-                "tags": ["company", "sales", "products"]
+                "confidence_score": confidence_score,
+                "tags": tags
             }
             
             # Insert new knowledge record

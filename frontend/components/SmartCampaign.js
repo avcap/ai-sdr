@@ -9,6 +9,12 @@ export default function SmartCampaign({ isOpen, onClose, onCampaignCreated }) {
   const [results, setResults] = useState(null);
   const [error, setError] = useState(null);
   const [isSaving, setIsSaving] = useState(false);
+  
+  // Phase 3: Adaptive features
+  const [useAdaptive, setUseAdaptive] = useState(true);
+  const [knowledgeAssessment, setKnowledgeAssessment] = useState(null);
+  const [marketIntelligence, setMarketIntelligence] = useState(null);
+  const [adaptiveMetadata, setAdaptiveMetadata] = useState(null);
 
   const pipelineStages = [
     { id: 'prompt_analysis', name: 'Analyzing Prompt', icon: '📝' },
@@ -17,6 +23,47 @@ export default function SmartCampaign({ isOpen, onClose, onCampaignCreated }) {
     { id: 'quality_gates', name: 'Quality Gates', icon: '✅' },
     { id: 'campaign_creation', name: 'Creating Campaign', icon: '🎯' }
   ];
+
+  // Phase 3: Get knowledge assessment on component mount
+  useEffect(() => {
+    if (isOpen && useAdaptive) {
+      getKnowledgeAssessment();
+    }
+  }, [isOpen, useAdaptive]);
+
+  const getKnowledgeAssessment = async () => {
+    try {
+      const response = await fetch('/api/phase3/knowledge-assessment', {
+        headers: {
+          'Authorization': `Bearer ${session?.accessToken || 'demo_token'}`
+        }
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        setKnowledgeAssessment(data.assessment);
+      }
+    } catch (error) {
+      console.error('Failed to get knowledge assessment:', error);
+    }
+  };
+
+  const getMarketIntelligence = async (industry) => {
+    try {
+      const response = await fetch(`/api/phase3/market-intelligence/${industry}`, {
+        headers: {
+          'Authorization': `Bearer ${session?.accessToken || 'demo_token'}`
+        }
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        setMarketIntelligence(data);
+      }
+    } catch (error) {
+      console.error('Failed to get market intelligence:', error);
+    }
+  };
 
   const executeSmartCampaign = async () => {
     if (!prompt.trim()) {
@@ -28,15 +75,21 @@ export default function SmartCampaign({ isOpen, onClose, onCampaignCreated }) {
     setError(null);
     setResults(null);
     setExecutionProgress({});
+    setAdaptiveMetadata(null);
 
     try {
+      const requestBody = { 
+        prompt: prompt.trim(),
+        use_adaptive: useAdaptive
+      };
+
       const response = await fetch('/api/smart-campaign/execute', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${session?.accessToken || 'demo_token'}`
         },
-        body: JSON.stringify({ prompt: prompt.trim() }),
+        body: JSON.stringify(requestBody),
       });
 
       const data = await response.json();
@@ -46,6 +99,11 @@ export default function SmartCampaign({ isOpen, onClose, onCampaignCreated }) {
       }
 
       setResults(data);
+      
+      // Phase 3: Store adaptive metadata if available
+      if (useAdaptive && data.adaptive_metadata) {
+        setAdaptiveMetadata(data.adaptive_metadata);
+      }
       
       // Simulate progress updates
       pipelineStages.forEach((stage, index) => {
@@ -215,6 +273,57 @@ export default function SmartCampaign({ isOpen, onClose, onCampaignCreated }) {
                 </p>
               </div>
 
+              {/* Phase 3: Adaptive Features Toggle */}
+              <div className="bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-200 rounded-lg p-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-lg font-semibold text-gray-900">🧠 Phase 3: Adaptive Intelligence</h3>
+                    <p className="text-sm text-gray-600">Enable market-aware AI with knowledge fusion</p>
+                  </div>
+                  <label className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      checked={useAdaptive}
+                      onChange={(e) => setUseAdaptive(e.target.checked)}
+                      className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                    />
+                    <span className="text-sm font-medium text-gray-700">Enable Adaptive Mode</span>
+                  </label>
+                </div>
+                
+                {useAdaptive && knowledgeAssessment && (
+                  <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="bg-white rounded-lg p-3 border border-gray-200">
+                      <div className="flex items-center space-x-2">
+                        <span className="text-lg">📊</span>
+                        <div>
+                          <p className="text-sm font-medium text-gray-900">Knowledge Level</p>
+                          <p className="text-xs text-gray-600 capitalize">{knowledgeAssessment.level}</p>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="bg-white rounded-lg p-3 border border-gray-200">
+                      <div className="flex items-center space-x-2">
+                        <span className="text-lg">📚</span>
+                        <div>
+                          <p className="text-sm font-medium text-gray-900">Documents</p>
+                          <p className="text-xs text-gray-600">{knowledgeAssessment.document_count}</p>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="bg-white rounded-lg p-3 border border-gray-200">
+                      <div className="flex items-center space-x-2">
+                        <span className="text-lg">🎯</span>
+                        <div>
+                          <p className="text-sm font-medium text-gray-900">Confidence</p>
+                          <p className="text-xs text-gray-600">{Math.round(knowledgeAssessment.overall_confidence * 100)}%</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               {error && (
                 <div className="bg-red-50 border border-red-200 rounded-lg p-4">
                   <p className="text-red-800">{error}</p>
@@ -328,54 +437,79 @@ export default function SmartCampaign({ isOpen, onClose, onCampaignCreated }) {
                 </div>
               </div>
 
-              {/* Enhanced AI Insights */}
-              <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-                <h3 className="text-lg font-semibold text-yellow-900 mb-2">💡 AI Insights & Recommendations</h3>
-                
-                {/* Campaign Creation Process */}
-                <div className="mb-4">
-                  <h4 className="font-medium text-yellow-800 mb-2">🎯 How Your Campaign Was Created:</h4>
-                  <div className="text-sm text-yellow-700 space-y-1">
-                    <p>1. <strong>Prompt Analysis:</strong> "{results.user_prompt || prompt}" → Extracted targeting criteria</p>
-                    <p>2. <strong>Prospector Agent:</strong> Found {results.premium_leads.length + results.backup_leads.length} potential leads</p>
-                    <p>3. <strong>Enrichment Agent:</strong> Validated emails, phones, LinkedIn profiles, and enriched company data</p>
-                    <p>4. <strong>Quality Gates:</strong> Scored leads A-F based on data completeness and validity</p>
-                    <p>5. <strong>Campaign Creation:</strong> Generated "{results.campaign_data.name}" with smart defaults</p>
-                  </div>
-                </div>
-
-                {/* Data Quality Insights */}
-                <div className="mb-4">
-                  <h4 className="font-medium text-yellow-800 mb-2">📊 Data Quality Analysis:</h4>
-                  <div className="text-sm text-yellow-700">
-                    {results.insights?.quality_summary && (
-                      <p className="mb-2">{results.insights.quality_summary}</p>
-                    )}
-                    {results.insights?.recommendations && results.insights.recommendations.length > 0 && (
-                      <div>
-                        <p className="font-medium mb-1">Recommendations for better results:</p>
-                        <ul className="list-disc list-inside">
-                          {results.insights.recommendations.map((rec, index) => (
-                            <li key={index}>{rec}</li>
-                          ))}
-                        </ul>
+              {/* Phase 3: Adaptive Intelligence Results */}
+              {useAdaptive && adaptiveMetadata && (
+                <div className="bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-200 rounded-lg p-4">
+                  <h3 className="text-lg font-semibold text-purple-900 mb-4">🧠 Phase 3: Adaptive Intelligence Results</h3>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                    <div className="bg-white rounded-lg p-3 border border-purple-200">
+                      <div className="flex items-center space-x-2 mb-2">
+                        <span className="text-lg">🎯</span>
+                        <div>
+                          <p className="text-sm font-medium text-gray-900">Strategy Used</p>
+                          <p className="text-xs text-gray-600 capitalize">{results.strategy_used || 'hybrid'}</p>
+                        </div>
                       </div>
-                    )}
+                    </div>
+                    <div className="bg-white rounded-lg p-3 border border-purple-200">
+                      <div className="flex items-center space-x-2 mb-2">
+                        <span className="text-lg">📊</span>
+                        <div>
+                          <p className="text-sm font-medium text-gray-900">Knowledge Level</p>
+                          <p className="text-xs text-gray-600 capitalize">{results.knowledge_level || 'medium'}</p>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="bg-white rounded-lg p-3 border border-purple-200">
+                      <div className="flex items-center space-x-2 mb-2">
+                        <span className="text-lg">🎯</span>
+                        <div>
+                          <p className="text-sm font-medium text-gray-900">Confidence Score</p>
+                          <p className="text-xs text-gray-600">{Math.round((results.confidence_score || 0.7) * 100)}%</p>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="bg-white rounded-lg p-3 border border-purple-200">
+                      <div className="flex items-center space-x-2 mb-2">
+                        <span className="text-lg">📈</span>
+                        <div>
+                          <p className="text-sm font-medium text-gray-900">Market Intelligence</p>
+                          <p className="text-xs text-gray-600">Enhanced</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Market Intelligence Details */}
+                  {results.market_intelligence && (
+                    <div className="bg-white rounded-lg p-4 border border-purple-200">
+                      <h4 className="font-medium text-purple-800 mb-2">📊 Market Intelligence Applied</h4>
+                      <div className="text-sm text-gray-700 space-y-1">
+                        {results.market_intelligence.industry_trends && (
+                          <p><strong>Industry Trends:</strong> {results.market_intelligence.industry_trends.trends?.join(', ') || 'Market analysis applied'}</p>
+                        )}
+                        {results.market_intelligence.market_sentiment && (
+                          <p><strong>Market Sentiment:</strong> {results.market_intelligence.market_sentiment.sentiment || 'Neutral'} ({Math.round((results.market_intelligence.market_sentiment.confidence || 0.5) * 100)}% confidence)</p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Adaptive Execution Details */}
+                  <div className="bg-white rounded-lg p-4 border border-purple-200 mt-4">
+                    <h4 className="font-medium text-purple-800 mb-2">⚡ Adaptive Execution Details</h4>
+                    <div className="text-sm text-gray-700 space-y-1">
+                      <p><strong>Assessment:</strong> {adaptiveMetadata.assessment?.level || 'Medium'} knowledge level detected</p>
+                      <p><strong>Strategy Plan:</strong> {adaptiveMetadata.strategy_plan?.strategy || 'Hybrid'} approach selected</p>
+                      <p><strong>Execution Result:</strong> {adaptiveMetadata.execution_result?.strategy_metadata?.strategy_used || 'Adaptive'} execution completed</p>
+                      {adaptiveMetadata.pipeline_performance && (
+                        <p><strong>Performance:</strong> {adaptiveMetadata.pipeline_performance.total_time || 0}s execution time</p>
+                      )}
+                    </div>
                   </div>
                 </div>
-
-                {/* Common Issues */}
-                {results.insights?.common_issues && results.insights.common_issues.length > 0 && (
-                  <div>
-                    <h4 className="font-medium text-yellow-800 mb-2">⚠️ Common Issues Found:</h4>
-                    <ul className="list-disc list-inside text-sm text-yellow-700">
-                      {results.insights.common_issues.map((issue, index) => (
-                        <li key={index}>{issue}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </div>
+              )}
 
               {/* Detailed Lead Data Table */}
               <div className="space-y-4">

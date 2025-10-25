@@ -8,6 +8,10 @@ import requests
 from openai import OpenAI
 import dns.resolver
 import socket
+from services.knowledge_fusion_service import KnowledgeFusionService
+from services.llm_selector_service import LLMSelectorService
+from agents.adaptive_ai_agent import AdaptiveAIAgent, KnowledgeLevel, AdaptationStrategy
+from integrations.grok_service import GrokService
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
