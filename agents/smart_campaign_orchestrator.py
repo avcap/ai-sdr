@@ -5,6 +5,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 import asyncio
 from openai import OpenAI
+from services.knowledge_service import KnowledgeService
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -27,6 +28,7 @@ class SmartCampaignOrchestrator:
     
     def __init__(self):
         self.openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        self.knowledge_service = KnowledgeService()
         self.pipeline_stages = [
             "prompt_analysis",
             "prospecting", 
@@ -35,21 +37,36 @@ class SmartCampaignOrchestrator:
             "campaign_creation"
         ]
         
-    def analyze_prompt(self, user_prompt: str) -> Dict[str, Any]:
+    def analyze_prompt(self, user_prompt: str, tenant_id: str = None, user_id: str = None) -> Dict[str, Any]:
         """
-        Analyze user prompt to extract targeting criteria and generate smart defaults
+        Analyze user prompt to extract targeting criteria and generate smart defaults with company knowledge
         
         Args:
             user_prompt: User's natural language prompt
+            tenant_id: User's tenant ID
+            user_id: User's ID
             
         Returns:
             Dict with analyzed criteria and smart defaults
         """
         try:
+            # Get company knowledge for enhanced analysis
+            company_context = ""
+            target_audience = {}
+            value_propositions = []
+            if tenant_id and user_id:
+                company_context = self.knowledge_service.get_company_context(tenant_id, user_id, task_type="campaign")
+                target_audience = self.knowledge_service.get_target_audience(tenant_id, user_id, task_type="campaign")
+                value_propositions = self.knowledge_service.get_value_propositions(tenant_id, user_id, task_type="campaign")
+            
             analysis_prompt = f"""
             Analyze this B2B prospecting prompt and extract key information:
             
             User Prompt: "{user_prompt}"
+            
+            {f"Company Context: {company_context}" if company_context else ""}
+            {f"Target Audience: {target_audience}" if target_audience else ""}
+            {f"Value Propositions: {value_propositions}" if value_propositions else ""}
             
             Extract and return a JSON response with:
             - target_role: Primary job title/role
@@ -63,6 +80,7 @@ class SmartCampaignOrchestrator:
             - value_proposition: Suggested value proposition for this audience
             - call_to_action: Suggested call-to-action
             
+            {f"Use the company's target audience and value propositions to enhance the analysis." if company_context else ""}
             Be realistic and conservative in your estimates.
             """
             
@@ -78,17 +96,20 @@ class SmartCampaignOrchestrator:
             try:
                 analysis = json.loads(content)
             except json.JSONDecodeError:
-                # Fallback analysis
+                # Fallback analysis with company knowledge
+                fallback_target_audience = target_audience.get('industry', 'Technology') + ' decision makers' if target_audience else "Technology decision makers"
+                fallback_value_prop = value_propositions[0] if value_propositions else "Streamline your operations with our innovative solution"
+                
                 analysis = {
                     "target_role": "Decision Maker",
-                    "industry": "Technology",
-                    "company_size": "50-200",
+                    "industry": target_audience.get('industry', 'Technology') if target_audience else "Technology",
+                    "company_size": target_audience.get('company_size', '50-200') if target_audience else "50-200",
                     "location": "United States",
                     "count": 10,
                     "additional_filters": None,
                     "campaign_name": f"AI Generated Campaign - {datetime.now().strftime('%Y%m%d')}",
-                    "target_audience": "Technology decision makers",
-                    "value_proposition": "Streamline your operations with our innovative solution",
+                    "target_audience": fallback_target_audience,
+                    "value_proposition": fallback_value_prop,
                     "call_to_action": "Schedule a brief call to discuss how we can help"
                 }
             
@@ -344,12 +365,14 @@ class SmartCampaignOrchestrator:
                 "campaign_data": None
             }
     
-    def execute_smart_campaign(self, user_prompt: str) -> Dict[str, Any]:
+    def execute_smart_campaign(self, user_prompt: str, tenant_id: str = None, user_id: str = None) -> Dict[str, Any]:
         """
-        Execute the complete Smart Campaign pipeline
+        Execute the complete Smart Campaign pipeline with company knowledge
         
         Args:
             user_prompt: User's natural language prompt
+            tenant_id: User's tenant ID
+            user_id: User's ID
             
         Returns:
             Dict with complete pipeline results
@@ -371,7 +394,7 @@ class SmartCampaignOrchestrator:
         try:
             # Stage 1: Prompt Analysis
             logger.info("Stage 1: Analyzing prompt...")
-            analysis_result = self.analyze_prompt(user_prompt)
+            analysis_result = self.analyze_prompt(user_prompt, tenant_id, user_id)
             pipeline_results["stages"]["prompt_analysis"] = analysis_result
             
             if not analysis_result["success"]:

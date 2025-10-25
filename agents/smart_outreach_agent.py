@@ -4,6 +4,7 @@ import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 from openai import OpenAI
+from services.knowledge_service import KnowledgeService
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -24,6 +25,7 @@ class SmartOutreachAgent:
     
     def __init__(self):
         self.openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        self.knowledge_service = KnowledgeService()
         
         # Channel optimization rules
         self.channel_rules = {
@@ -72,13 +74,16 @@ class SmartOutreachAgent:
         }
     
     def create_smart_outreach_plan(self, leads: List[Dict[str, Any]], 
-                                 campaign_context: Dict[str, Any] = None) -> Dict[str, Any]:
+                                 campaign_context: Dict[str, Any] = None,
+                                 tenant_id: str = None, user_id: str = None) -> Dict[str, Any]:
         """
-        Create an intelligent outreach plan for multiple leads
+        Create an intelligent outreach plan for multiple leads with company knowledge
         
         Args:
             leads: List of enriched leads
             campaign_context: Campaign context and objectives
+            tenant_id: User's tenant ID
+            user_id: User's ID
             
         Returns:
             Dict with optimized outreach plan
@@ -86,12 +91,28 @@ class SmartOutreachAgent:
         try:
             logger.info(f"Creating smart outreach plan for {len(leads)} leads")
             
+            # Get company knowledge for enhanced outreach
+            company_context = ""
+            sales_approach = ""
+            value_propositions = []
+            competitive_advantages = []
+            
+            if tenant_id and user_id:
+                company_context = self.knowledge_service.get_company_context(tenant_id, user_id, task_type="outreach")
+                sales_approach = self.knowledge_service.get_sales_approach(tenant_id, user_id, task_type="outreach")
+                value_propositions = self.knowledge_service.get_value_propositions(tenant_id, user_id, task_type="outreach")
+                competitive_advantages = self.knowledge_service.get_competitive_advantages(tenant_id, user_id, task_type="outreach")
+            
             outreach_plan = {
                 "total_leads": len(leads),
                 "channels": {},
                 "schedule": [],
                 "optimization_strategy": {},
-                "expected_results": {}
+                "expected_results": {},
+                "company_context": company_context,
+                "sales_approach": sales_approach,
+                "value_propositions": value_propositions,
+                "competitive_advantages": competitive_advantages
             }
             
             # Analyze leads and determine optimal channels

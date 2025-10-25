@@ -39,15 +39,26 @@ engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# Redis setup
-redis_client = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379"))
+# Redis setup (optional)
+try:
+    redis_client = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379"))
+    redis_client.ping()  # Test connection
+    logger.info("✅ Redis connected successfully")
+except Exception as e:
+    logger.warning(f"⚠️ Redis not available: {e}. Running without Redis.")
+    redis_client = None
 
-# Celery setup
-celery_app = Celery(
-    "ai_sdr",
-    broker=os.getenv("REDIS_URL", "redis://localhost:6379"),
-    backend=os.getenv("REDIS_URL", "redis://localhost:6379")
-)
+# Celery setup (optional)
+try:
+    celery_app = Celery(
+        "ai_sdr",
+        broker=os.getenv("REDIS_URL", "redis://localhost:6379"),
+        backend=os.getenv("REDIS_URL", "redis://localhost:6379")
+    )
+    logger.info("✅ Celery configured successfully")
+except Exception as e:
+    logger.warning(f"⚠️ Celery not available: {e}. Running without Celery.")
+    celery_app = None
 
 # Database Models
 class Campaign(Base):
@@ -268,8 +279,9 @@ def execute_campaign_task(campaign_id: str, user_id: str):
         campaign.status = "completed" if results["status"] == "success" else "failed"
         db.commit()
         
-        # Store results in Redis
-        redis_client.set(f"campaign_results:{campaign_id}", json.dumps(results, default=str))
+        # Store results in Redis if available
+        if redis_client:
+            redis_client.set(f"campaign_results:{campaign_id}", json.dumps(results, default=str))
         
         db.close()
         return results
@@ -695,14 +707,13 @@ async def get_campaign_status(
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
     
-    # Get results from Redis
-    results_key = f"campaign_results:{campaign_id}"
-    results = redis_client.get(results_key)
-    
-    if results:
-        results_data = json.loads(results)
-    else:
-        results_data = None
+    # Get results from Redis if available
+    results_data = None
+    if redis_client:
+        results_key = f"campaign_results:{campaign_id}"
+        results = redis_client.get(results_key)
+        if results:
+            results_data = json.loads(results)
     
     return {
         "campaign_id": campaign_id,
@@ -1827,20 +1838,31 @@ async def upload_training_files(
 ):
     """Upload documents for AI agent training"""
     try:
+        logger.info(f"📤 File upload request received from user: {current_user['user_id']}")
+        logger.info(f"📁 Number of files: {len(files) if files else 0}")
+        
         if not files:
+            logger.error("❌ No files provided for upload")
             raise HTTPException(status_code=400, detail="No files provided")
+        
+        # Log each file details
+        for i, file in enumerate(files):
+            logger.info(f"📄 Uploading file {i+1}: {file.filename} (size: {file.size if hasattr(file, 'size') else 'unknown'})")
         
         # Create upload directory if it doesn't exist
         upload_dir = Path("uploads/training")
         upload_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"📂 Upload directory: {upload_dir.absolute()}")
         
         uploaded_files = []
         for file in files:
             # Validate file type
             allowed_extensions = ['.pdf', '.doc', '.docx', '.ppt', '.pptx', '.txt']
             file_extension = Path(file.filename).suffix.lower()
+            logger.info(f"🔍 File extension: {file_extension}")
             
             if file_extension not in allowed_extensions:
+                logger.error(f"❌ Unsupported file type: {file_extension}")
                 raise HTTPException(
                     status_code=400, 
                     detail=f"Unsupported file type: {file_extension}. Allowed: {allowed_extensions}"
@@ -1848,9 +1870,13 @@ async def upload_training_files(
             
             # Save file
             file_path = upload_dir / f"{current_user['user_id']}_{file.filename}"
+            logger.info(f"💾 Saving file to: {file_path}")
+            
             with open(file_path, "wb") as buffer:
                 content = await file.read()
                 buffer.write(content)
+            
+            logger.info(f"✅ File saved successfully: {file_path} ({len(content)} bytes)")
             
             uploaded_files.append({
                 "filename": file.filename,
@@ -1858,6 +1884,7 @@ async def upload_training_files(
                 "size": len(content)
             })
         
+        logger.info(f"🎉 Successfully uploaded {len(uploaded_files)} files")
         return {
             "success": True,
             "message": f"Successfully uploaded {len(uploaded_files)} files",
@@ -1865,7 +1892,7 @@ async def upload_training_files(
         }
         
     except Exception as e:
-        logger.error(f"File upload error: {e}")
+        logger.error(f"💥 File upload error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/train-your-team/extract-knowledge")
@@ -1875,31 +1902,56 @@ async def extract_knowledge_from_files(
 ):
     """Extract knowledge from uploaded documents using Claude AI"""
     try:
+        logger.info(f"🔍 Knowledge extraction request received from user: {current_user['user_id']}")
+        logger.info(f"📋 Request body: {request}")
+        
         files = request.get("files", [])
+        logger.info(f"📁 Files in request: {len(files)} files")
+        
         if not files:
+            logger.error("❌ No files provided in request")
             raise HTTPException(status_code=400, detail="No files provided")
+        
+        # Log each file details
+        for i, file in enumerate(files):
+            logger.info(f"📄 File {i+1}: {file}")
         
         # Import the knowledge extraction agent
         from agents.knowledge_extraction_agent import KnowledgeExtractionAgent
         
         # Initialize and run the knowledge extraction agent
+        logger.info("🤖 Initializing Knowledge Extraction Agent...")
         agent = KnowledgeExtractionAgent()
         
         # Extract file paths
         file_paths = [file["path"] for file in files]
+        logger.info(f"🗂️ File paths to process: {file_paths}")
+        
+        # Check if files exist
+        for file_path in file_paths:
+            if not os.path.exists(file_path):
+                logger.error(f"❌ File not found: {file_path}")
+                raise HTTPException(status_code=400, detail=f"File not found: {file_path}")
+            else:
+                logger.info(f"✅ File exists: {file_path}")
+        
+        logger.info("🚀 Starting knowledge extraction...")
         result = agent.extract_knowledge_from_files(file_paths)
         
         if result["success"]:
+            logger.info("✅ Knowledge extraction completed successfully")
+            logger.info(f"📊 Extracted knowledge keys: {list(result['knowledge'].keys())}")
             return {
                 "success": True,
                 "message": "Knowledge extracted successfully",
                 "knowledge": result["knowledge"]
             }
         else:
+            logger.error(f"❌ Knowledge extraction failed: {result.get('error', 'Unknown error')}")
             raise HTTPException(status_code=500, detail=result.get("error", "Failed to extract knowledge"))
             
     except Exception as e:
-        logger.error(f"Knowledge extraction error: {e}")
+        logger.error(f"💥 Knowledge extraction error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/train-your-team/save-knowledge")

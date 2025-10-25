@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useSession, signOut } from 'next-auth/react';
 import { useRouter } from 'next/router';
 import Head from 'next/head';
-import GoogleSheetsImport from '../components/GoogleSheetsImport';
+// import GoogleSheetsImport from '../components/GoogleSheetsImport'; // REMOVED
 import ProspectorAgent from '../components/ProspectorAgent';
 import EnrichmentAgent from '../components/EnrichmentAgent';
 import SmartCampaign from '../components/SmartCampaign';
@@ -20,7 +20,7 @@ export default function Dashboard() {
   const [showGoogleConnect, setShowGoogleConnect] = useState(false);
   const [showCreateCampaign, setShowCreateCampaign] = useState(false);
   const [showUploadLeads, setShowUploadLeads] = useState(false);
-  const [showSheetsImport, setShowSheetsImport] = useState(false);
+  // const [showSheetsImport, setShowSheetsImport] = useState(false); // REMOVED
   const [showProspectorAgent, setShowProspectorAgent] = useState(false);
   const [showEnrichmentAgent, setShowEnrichmentAgent] = useState(false);
   const [showSmartCampaign, setShowSmartCampaign] = useState(false);
@@ -73,35 +73,50 @@ export default function Dashboard() {
   const fetchData = async () => {
     try {
       setLoading(true);
+      console.log('🔄 Starting fetchData...');
       
       // Fetch campaigns
+      console.log('📡 Fetching campaigns...');
       const campaignsResponse = await fetch('/api/campaigns', {
         headers: {
           'Authorization': `Bearer ${session?.accessToken || 'demo_token'}`
         }
       });
       
+      console.log('📊 Campaigns response status:', campaignsResponse.status);
       if (campaignsResponse.ok) {
         const campaignsData = await campaignsResponse.json();
-        setCampaigns(campaignsData.campaigns || []);
+        console.log('📊 Campaigns data:', campaignsData);
+        // Handle both array response and object with campaigns property
+        const campaignsList = Array.isArray(campaignsData) ? campaignsData : (campaignsData.campaigns || []);
+        setCampaigns(campaignsList);
+        console.log('✅ Campaigns set:', campaignsList.length);
+      } else {
+        console.error('❌ Campaigns response not ok:', campaignsResponse.status);
       }
       
       // Fetch Google status
+      console.log('📡 Fetching Google status...');
       const googleResponse = await fetch('/api/auth/google/status', {
         headers: {
           'Authorization': `Bearer ${session?.accessToken || 'demo_token'}`
         }
       });
       
+      console.log('📊 Google response status:', googleResponse.status);
       if (googleResponse.ok) {
         const googleData = await googleResponse.json();
         setGoogleStatus(googleData);
+        console.log('✅ Google status set:', googleData);
+      } else {
+        console.error('❌ Google response not ok:', googleResponse.status);
       }
       
     } catch (err) {
       setError('Failed to load dashboard data');
-      console.error('Dashboard error:', err);
+      console.error('❌ Dashboard error:', err);
     } finally {
+      console.log('🏁 Setting loading to false');
       setLoading(false);
     }
   };
@@ -245,23 +260,34 @@ export default function Dashboard() {
     }
   };
 
-  const handleSheetsImportComplete = (result) => {
-    alert(`Successfully imported ${result.leads_added || result.leads_created} leads from Google Sheets`);
-    setShowSheetsImport(false);
-    setSelectedCampaign(null);
-    fetchData(); // Refresh data
-  };
+  // const handleSheetsImportComplete = (result) => { // REMOVED
+  //   alert(`Successfully imported ${result.leads_added || result.leads_created} leads from Google Sheets`);
+  //   setShowSheetsImport(false);
+  //   setSelectedCampaign(null);
+  //   fetchData(); // Refresh data
+  // };
 
-  if (status === 'loading' || loading) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-blue-600 mx-auto"></div>
-          <p className="mt-4 text-gray-600">Loading dashboard...</p>
-        </div>
-      </div>
-    );
-  }
+  // Temporarily disable loading check to debug
+  // if (status === 'loading' || loading) {
+  //   console.log('🔄 Dashboard loading state:', { status, loading });
+  //   return (
+  //     <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+  //       <div className="text-center">
+  //         <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-blue-600 mx-auto"></div>
+  //         <p className="mt-4 text-gray-600">Loading dashboard...</p>
+  //       </div>
+  //     </div>
+  //   );
+  // }
+
+  // Debug session and loading state
+  console.log('🔍 Dashboard render state:', { 
+    status, 
+    loading, 
+    session: !!session, 
+    campaigns: campaigns.length,
+    googleStatus: !!googleStatus 
+  });
 
   return (
     <>
@@ -454,15 +480,7 @@ export default function Dashboard() {
                           >
                             Upload Leads
                           </button>
-                          <button
-                            onClick={() => {
-                              setSelectedCampaign(campaign);
-                              setShowSheetsImport(true);
-                            }}
-                            className="bg-purple-600 text-white px-3 py-1 rounded text-sm hover:bg-purple-700"
-                          >
-                            Import from Sheets
-                          </button>
+                          {/* Import from Sheets button removed */}
                           <button
                             onClick={() => handleExecuteCampaign(campaign.id)}
                             className="bg-green-600 text-white px-3 py-1 rounded text-sm hover:bg-green-700"
@@ -479,8 +497,8 @@ export default function Dashboard() {
           </div>
         </main>
 
-        {/* Google Sheets Import Modal */}
-        {showSheetsImport && selectedCampaign && (
+        {/* Google Sheets Import Modal - REMOVED */}
+        {/* {showSheetsImport && selectedCampaign && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
             <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full mx-4 max-h-[90vh] overflow-y-auto">
               <div className="flex items-center justify-between p-6 border-b">
@@ -502,7 +520,7 @@ export default function Dashboard() {
               </div>
             </div>
           </div>
-        )}
+        )} */}
 
         {/* Create Campaign Modal */}
         {showCreateCampaign && (

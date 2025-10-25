@@ -136,23 +136,12 @@ class SupabaseService:
             # Convert the knowledge data to match our table structure
             import json
             
-            # Create a summary of all knowledge
-            knowledge_summary = {
-                "company_info": knowledge_data.get("company_info"),
-                "sales_approach": knowledge_data.get("sales_approach"),
-                "products": knowledge_data.get("products"),
-                "key_messages": knowledge_data.get("key_messages"),
-                "value_propositions": knowledge_data.get("value_propositions"),
-                "target_audience": knowledge_data.get("target_audience"),
-                "competitive_advantages": knowledge_data.get("competitive_advantages")
-            }
-            
-            # Create knowledge record that matches our table structure
+            # Preserve the original knowledge structure instead of converting to old format
             knowledge_record = {
                 "tenant_id": tenant_id,
                 "user_id": user_id,
                 "subject": "Company Knowledge",
-                "content": json.dumps(knowledge_summary, indent=2),
+                "content": json.dumps(knowledge_data, indent=2),  # Save the full knowledge structure
                 "source_type": "extracted",
                 "source_id": None,
                 "confidence_score": 0.8,
@@ -175,13 +164,56 @@ class SupabaseService:
             raise
     
     def get_user_knowledge(self, tenant_id: str, user_id: str) -> Optional[Dict[str, Any]]:
-        """Get user knowledge"""
+        """Get user knowledge (most recent article only - for backward compatibility)"""
         try:
-            result = self.client.table("user_knowledge").select("*").eq("tenant_id", tenant_id).eq("user_id", user_id).eq("is_active", True).execute()
+            result = self.client.table("user_knowledge").select("*").eq("tenant_id", tenant_id).eq("user_id", user_id).order("created_at", desc=True).limit(1).execute()
             return result.data[0] if result.data else None
         except Exception as e:
             logger.error(f"Error getting user knowledge: {e}")
             return None
+    
+    def get_all_user_knowledge(self, tenant_id: str, user_id: str) -> List[Dict[str, Any]]:
+        """Get all user knowledge articles"""
+        try:
+            result = self.client.table("user_knowledge").select("*").eq("tenant_id", tenant_id).eq("user_id", user_id).order("created_at", desc=True).execute()
+            return result.data if result.data else []
+        except Exception as e:
+            logger.error(f"Error getting all user knowledge: {e}")
+            return []
+    
+    def get_user_knowledge_by_types(self, tenant_id: str, user_id: str, document_types: List[str]) -> List[Dict[str, Any]]:
+        """Get user knowledge articles filtered by document types"""
+        try:
+            query = self.client.table("user_knowledge").select("*").eq("tenant_id", tenant_id).eq("user_id", user_id)
+            
+            # Filter by document types if provided
+            if document_types:
+                # Note: This assumes document_type is stored in the content JSON
+                # We'll filter after retrieval for now, but could optimize with a proper query later
+                result = query.order("created_at", desc=True).execute()
+                filtered_data = []
+                
+                for article in result.data:
+                    try:
+                        import json
+                        content = json.loads(article.get('content', '{}'))
+                        doc_type = content.get('document_type', 'company_info')
+                        if doc_type in document_types:
+                            filtered_data.append(article)
+                    except (json.JSONDecodeError, KeyError):
+                        # If we can't parse, include it as company_info
+                        if 'company_info' in document_types:
+                            filtered_data.append(article)
+                
+                return filtered_data
+            else:
+                # Return all articles if no types specified
+                result = query.order("created_at", desc=True).execute()
+                return result.data if result.data else []
+                
+        except Exception as e:
+            logger.error(f"Error getting user knowledge by types: {e}")
+            return []
     
     def save_training_document(self, tenant_id: str, user_id: str, filename: str, file_path: str, file_size: int, file_type: str) -> Dict[str, Any]:
         """Save training document record"""

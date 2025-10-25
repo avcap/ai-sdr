@@ -5,6 +5,8 @@ export default async function handler(req, res) {
 
   try {
     const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+    
+    // Forward the request body including document_type
     const response = await fetch(`${backendUrl}/train-your-team/extract-knowledge`, {
       method: 'POST',
       headers: {

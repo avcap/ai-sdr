@@ -8,11 +8,20 @@ export default function TrainYourTeam({ isOpen, onClose }) {
   const [processingStatus, setProcessingStatus] = useState('idle');
   const [extractedKnowledge, setExtractedKnowledge] = useState(null);
   const [trainingProgress, setTrainingProgress] = useState(0);
+  const [documentType, setDocumentType] = useState('');
+  const [urlInput, setUrlInput] = useState('');
+  const [inputMethod, setInputMethod] = useState('file'); // 'file' or 'url'
   const fileInputRef = useRef(null);
 
   const handleFileUpload = async (event) => {
     const files = Array.from(event.target.files);
     if (files.length === 0) return;
+
+    // Validate document type selection
+    if (!documentType) {
+      alert('Please select a document type before uploading.');
+      return;
+    }
 
     setProcessingStatus('uploading');
     setTrainingProgress(10);
@@ -23,6 +32,7 @@ export default function TrainYourTeam({ isOpen, onClose }) {
       files.forEach(file => {
         formData.append('files', file);
       });
+      formData.append('document_type', documentType);
 
       const response = await fetch('/api/train-your-team/upload', {
         method: 'POST',
@@ -34,12 +44,12 @@ export default function TrainYourTeam({ isOpen, onClose }) {
 
       if (response.ok) {
         const result = await response.json();
-        setUploadedFiles(result.files || []);
+        setUploadedFiles(result.uploaded_files || []);
         setProcessingStatus('processing');
         setTrainingProgress(30);
         
         // Start knowledge extraction
-        await extractKnowledge(result.files || []);
+        await extractKnowledge(result.uploaded_files || [], documentType);
       } else {
         throw new Error('Failed to upload files');
       }
@@ -49,12 +59,60 @@ export default function TrainYourTeam({ isOpen, onClose }) {
     }
   };
 
-  const extractKnowledge = async (files) => {
+  const handleUrlSubmit = async () => {
+    if (!urlInput.trim()) {
+      alert('Please enter a URL.');
+      return;
+    }
+
+    // Validate document type selection
+    if (!documentType) {
+      alert('Please select a document type before processing URL.');
+      return;
+    }
+
+    setProcessingStatus('uploading');
+    setTrainingProgress(10);
+
+    try {
+      const response = await fetch('/api/train-your-team/upload', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session?.accessToken || 'demo_token'}`
+        },
+        body: JSON.stringify({
+          url: urlInput.trim(),
+          document_type: documentType
+        })
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        setUploadedFiles([{ name: urlInput, size: 'URL content', url: urlInput }]);
+        setProcessingStatus('processing');
+        setTrainingProgress(30);
+        
+        // Start knowledge extraction
+        await extractKnowledge([{ path: result.content_path, filename: urlInput }], documentType);
+      } else {
+        throw new Error('Failed to process URL');
+      }
+    } catch (error) {
+      console.error('URL processing error:', error);
+      setProcessingStatus('error');
+    }
+  };
+
+  const extractKnowledge = async (files, docType) => {
     try {
       setTrainingProgress(50);
       
-      // Convert files to file paths for the backend
-      const filePaths = files.map(file => file.file_path || file.path || `/tmp/${file.filename}`);
+      // Convert files to the format expected by the backend
+      const filesForBackend = files.map(file => ({
+        path: file.path || file.file_path || `/tmp/${file.filename}`,
+        filename: file.filename
+      }));
       const subject = files[0]?.subject || 'Uploaded Document';
       
       const response = await fetch('/api/train-your-team/extract-knowledge', {
@@ -64,8 +122,9 @@ export default function TrainYourTeam({ isOpen, onClose }) {
           'Authorization': `Bearer ${session?.accessToken || 'demo_token'}`
         },
         body: JSON.stringify({ 
-          file_paths: filePaths,
-          subject: subject
+          files: filesForBackend,
+          subject: subject,
+          document_type: docType
         })
       });
 
@@ -96,7 +155,8 @@ export default function TrainYourTeam({ isOpen, onClose }) {
 
       if (response.ok) {
         alert('Knowledge saved successfully! Your AI agents are now trained.');
-        onClose();
+        // Don't close the modal - let user stay on the training page
+        // onClose();
       } else {
         throw new Error('Failed to save knowledge');
       }
@@ -111,6 +171,9 @@ export default function TrainYourTeam({ isOpen, onClose }) {
     setProcessingStatus('idle');
     setExtractedKnowledge(null);
     setTrainingProgress(0);
+    setDocumentType('');
+    setUrlInput('');
+    setInputMethod('file');
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
@@ -176,30 +239,118 @@ export default function TrainYourTeam({ isOpen, onClose }) {
                   Upload Company Documents
                 </h3>
                 <p className="text-gray-600 mb-6">
-                  Upload PDFs, Word docs, or PowerPoint presentations to train your AI agents on your company's approach, products, and sales methodology.
+                  Upload PDFs, Word docs, PowerPoint presentations, or enter a website URL to train your AI agents on your company's approach, products, and sales methodology.
                 </p>
               </div>
 
-              {/* File Upload Area */}
-              <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center hover:border-gray-400 transition-colors">
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  multiple
-                  accept=".pdf,.doc,.docx,.ppt,.pptx,.txt"
-                  onChange={handleFileUpload}
-                  className="hidden"
-                />
-                <button
-                  onClick={() => fileInputRef.current?.click()}
-                  className="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition-colors mb-4"
+              {/* Document Type Selection */}
+              <div className="bg-gray-50 rounded-lg p-4">
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Select Document Type *
+                </label>
+                <select
+                  value={documentType}
+                  onChange={(e) => setDocumentType(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  required
                 >
-                  Choose Files
-                </button>
-                <p className="text-sm text-gray-500">
-                  Supported formats: PDF, Word, PowerPoint, Text files
+                  <option value="">Choose document type...</option>
+                  <option value="company_info">Company Info</option>
+                  <option value="products">Products</option>
+                  <option value="sales_training">Enhance Our Knowledge</option>
+                </select>
+                <p className="text-xs text-gray-500 mt-1">
+                  This helps Claude AI understand what type of information to extract.
                 </p>
               </div>
+
+              {/* Input Method Selection */}
+              <div className="bg-gray-50 rounded-lg p-4">
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Choose Input Method
+                </label>
+                <div className="flex space-x-4">
+                  <button
+                    onClick={() => setInputMethod('file')}
+                    className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                      inputMethod === 'file'
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
+                    }`}
+                  >
+                    📁 Upload Files
+                  </button>
+                  <button
+                    onClick={() => setInputMethod('url')}
+                    className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                      inputMethod === 'url'
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
+                    }`}
+                  >
+                    🌐 Website URL
+                  </button>
+                </div>
+              </div>
+
+              {/* File Upload Area */}
+              {inputMethod === 'file' && (
+                <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center hover:border-gray-400 transition-colors">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    accept=".pdf,.doc,.docx,.ppt,.pptx,.txt"
+                    onChange={handleFileUpload}
+                    className="hidden"
+                  />
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    className="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition-colors mb-4"
+                    disabled={!documentType}
+                  >
+                    Choose Files
+                  </button>
+                  <p className="text-sm text-gray-500">
+                    Supported formats: PDF, Word, PowerPoint, Text files
+                  </p>
+                  {!documentType && (
+                    <p className="text-sm text-red-500 mt-2">
+                      Please select a document type first
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {/* URL Input Area */}
+              {inputMethod === 'url' && (
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Website URL
+                    </label>
+                    <input
+                      type="url"
+                      value={urlInput}
+                      onChange={(e) => setUrlInput(e.target.value)}
+                      placeholder="https://example.com"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                  <button
+                    onClick={handleUrlSubmit}
+                    className="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition-colors"
+                    disabled={!documentType || !urlInput.trim()}
+                  >
+                    Process Website Content
+                  </button>
+                  {!documentType && (
+                    <p className="text-sm text-red-500">
+                      Please select a document type first
+                    </p>
+                  )}
+                </div>
+              )}
 
               {/* Processing Status */}
               {processingStatus !== 'idle' && (

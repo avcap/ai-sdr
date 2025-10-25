@@ -4,6 +4,7 @@ import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from openai import OpenAI
+from services.knowledge_service import KnowledgeService
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -24,6 +25,7 @@ class CopywriterAgent:
     
     def __init__(self):
         self.openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        self.knowledge_service = KnowledgeService()
         
         # Message templates and frameworks
         self.message_frameworks = {
@@ -69,20 +71,38 @@ class CopywriterAgent:
         }
     
     def personalize_message(self, lead_data: Dict[str, Any], message_type: str = "cold_email", 
-                          campaign_context: Dict[str, Any] = None, user_template: str = None) -> Dict[str, Any]:
+                          campaign_context: Dict[str, Any] = None, user_template: str = None,
+                          tenant_id: str = None, user_id: str = None) -> Dict[str, Any]:
         """
-        Generate a personalized message for a specific lead
+        Generate a personalized message for a specific lead with company knowledge
         
         Args:
             lead_data: Lead information (name, company, title, industry, etc.)
             message_type: Type of message (cold_email, linkedin_message, follow_up)
             campaign_context: Campaign context (value_proposition, call_to_action, etc.)
+            user_template: User-provided template for personalization
+            tenant_id: User's tenant ID
+            user_id: User's ID
             
         Returns:
             Dict with personalized message and metadata
         """
         try:
             logger.info(f"Generating personalized {message_type} for {lead_data.get('name', 'Unknown')}")
+            
+            # Get company knowledge for enhanced personalization
+            company_context = ""
+            products = []
+            value_propositions = []
+            sales_approach = ""
+            competitive_advantages = []
+            
+            if tenant_id and user_id:
+                company_context = self.knowledge_service.get_company_context(tenant_id, user_id, task_type="copywriting")
+                products = self.knowledge_service.get_products(tenant_id, user_id, task_type="copywriting")
+                value_propositions = self.knowledge_service.get_value_propositions(tenant_id, user_id, task_type="copywriting")
+                sales_approach = self.knowledge_service.get_sales_approach(tenant_id, user_id, task_type="copywriting")
+                competitive_advantages = self.knowledge_service.get_competitive_advantages(tenant_id, user_id, task_type="copywriting")
             
             # Extract lead context
             lead_context = self._extract_lead_context(lead_data)
@@ -91,12 +111,14 @@ class CopywriterAgent:
             # If user provided a template, use it for personalization
             if user_template:
                 personalization_prompt = self._build_template_personalization_prompt(
-                    lead_context, industry_context, user_template, campaign_context
+                    lead_context, industry_context, user_template, campaign_context,
+                    company_context, products, value_propositions, sales_approach, competitive_advantages
                 )
             else:
-                # Build personalization prompt
+                # Build personalization prompt with company knowledge
                 personalization_prompt = self._build_personalization_prompt(
-                    lead_context, industry_context, message_type, campaign_context
+                    lead_context, industry_context, message_type, campaign_context,
+                    company_context, products, value_propositions, sales_approach, competitive_advantages
                 )
             
             # Generate personalized message
@@ -254,10 +276,59 @@ class CopywriterAgent:
     def _build_personalization_prompt(self, lead_context: Dict[str, Any], 
                                     industry_context: Dict[str, Any],
                                     message_type: str, 
-                                    campaign_context: Dict[str, Any] = None) -> str:
-        """Build the personalization prompt for OpenAI"""
+                                    campaign_context: Dict[str, Any] = None,
+                                    company_context: str = "",
+                                    products: List[Dict[str, Any]] = None,
+                                    value_propositions: List[str] = None,
+                                    sales_approach: str = "",
+                                    competitive_advantages: List[str] = None) -> str:
+        """Build the personalization prompt for OpenAI with company knowledge"""
         
         framework = self.message_frameworks.get(message_type, self.message_frameworks["cold_email"])
+        
+        # Format company knowledge
+        company_section = ""
+        if company_context:
+            company_section = f"""
+        
+        COMPANY CONTEXT:
+        {company_context}
+        """
+        
+        products_section = ""
+        if products:
+            products_list = "\n".join([f"- {p.get('name', 'Product')}: {p.get('description', 'No description')}" for p in products])
+            products_section = f"""
+        
+        PRODUCTS/SERVICES:
+        {products_list}
+        """
+        
+        value_props_section = ""
+        if value_propositions:
+            value_props_list = "\n".join([f"- {vp}" for vp in value_propositions])
+            value_props_section = f"""
+        
+        VALUE PROPOSITIONS:
+        {value_props_list}
+        """
+        
+        sales_approach_section = ""
+        if sales_approach:
+            sales_approach_section = f"""
+        
+        SALES APPROACH:
+        {sales_approach}
+        """
+        
+        competitive_advantages_section = ""
+        if competitive_advantages:
+            comp_adv_list = "\n".join([f"- {ca}" for ca in competitive_advantages])
+            competitive_advantages_section = f"""
+        
+        COMPETITIVE ADVANTAGES:
+        {comp_adv_list}
+        """
         
         prompt = f"""
         You are an expert B2B copywriter who writes like a professional human. Create a personalized {message_type} message.
@@ -274,6 +345,12 @@ class CopywriterAgent:
         - Pain Points: {', '.join(industry_context['pain_points'])}
         - Benefits: {', '.join(industry_context['benefits'])}
         - Language Style: {industry_context['language']}
+        
+        {company_section}
+        {products_section}
+        {value_props_section}
+        {sales_approach_section}
+        {competitive_advantages_section}
         
         MESSAGE FRAMEWORK:
         - Structure: {', '.join(framework['structure'])}
