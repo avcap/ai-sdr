@@ -23,15 +23,29 @@ logger = logging.getLogger(__name__)
 class ProspectorCriteria(BaseModel):
     """Criteria for lead prospecting"""
     target_role: Union[str, List[str]]  # Support single or multiple roles
-    industry: str
+    industry: Union[str, List[str]]     # Support single or multiple industries
     company_size: str
-    location: str
+    location: Union[str, List[str]]     # Support single or multiple locations
     count: int = 50
     additional_filters: Optional[Dict[str, Any]] = None
     
     @validator('target_role')
     def normalize_target_role(cls, v):
         """Ensure target_role is always a list internally for consistency"""
+        if isinstance(v, str):
+            return [v]
+        return v
+    
+    @validator('industry')
+    def normalize_industry(cls, v):
+        """Ensure industry is always a list internally for consistency"""
+        if isinstance(v, str):
+            return [v]
+        return v
+    
+    @validator('location')
+    def normalize_location(cls, v):
+        """Ensure location is always a list internally for consistency"""
         if isinstance(v, str):
             return [v]
         return v
@@ -43,6 +57,22 @@ class ProspectorCriteria(BaseModel):
                 return self.target_role[0]
             return " or ".join(self.target_role)
         return self.target_role
+    
+    def get_industry_string(self) -> str:
+        """Get formatted string of industries for display/prompts"""
+        if isinstance(self.industry, list):
+            if len(self.industry) == 1:
+                return self.industry[0]
+            return " or ".join(self.industry)
+        return self.industry
+    
+    def get_location_string(self) -> str:
+        """Get formatted string of locations for display/prompts"""
+        if isinstance(self.location, list):
+            if len(self.location) == 1:
+                return self.location[0]
+            return " or ".join(self.location)
+        return self.location
 
 class ProspectorTool:
     """Tool for AI-powered lead prospecting based on natural language prompts"""
@@ -81,21 +111,24 @@ class ProspectorTool:
             
             Extract the following information:
             - target_role: The job title/role - can be a single string OR array of strings if multiple roles mentioned (e.g., "CTO", ["CTO", "VP Engineering"], "Founder")
-            - industry: The industry/sector (e.g., "SaaS", "Fintech", "Healthcare")
+            - industry: The industry/sector - can be a single string OR array of strings if multiple industries mentioned (e.g., "SaaS", ["SaaS", "Fintech"], "Healthcare")
             - company_size: Company size range (e.g., "10-50", "50-200", "500+")
-            - location: Geographic location (e.g., "San Francisco", "New York", "Remote")
+            - location: Geographic location - can be a single string OR array of strings if multiple locations mentioned (e.g., "San Francisco", ["San Francisco", "New York"], "Remote")
             - count: Number of leads requested (default 50)
             
             {f"Consider the company's target audience and industry when parsing the request." if company_context else ""}
             
-            IMPORTANT: If the user mentions multiple roles (e.g., "CTOs and VPs"), return target_role as an array.
+            IMPORTANT: 
+            - If multiple roles are mentioned (e.g., "CTOs and VPs"), return target_role as an array
+            - If multiple industries are mentioned (e.g., "SaaS and Fintech"), return industry as an array
+            - If multiple locations are mentioned (e.g., "SF and NYC"), return location as an array
             
             Return as JSON format:
             {{
                 "target_role": "extracted_role" OR ["role1", "role2"],
-                "industry": "extracted_industry", 
+                "industry": "extracted_industry" OR ["industry1", "industry2"], 
                 "company_size": "extracted_size",
-                "location": "extracted_location",
+                "location": "extracted_location" OR ["location1", "location2"],
                 "count": extracted_number
             }}
             """
@@ -136,16 +169,18 @@ class ProspectorTool:
                 company_context = self.knowledge_service.get_company_context(tenant_id, user_id, task_type="prospecting")
                 target_audience = self.knowledge_service.get_target_audience(tenant_id, user_id, task_type="prospecting")
             
-            # Format roles for better prompt
+            # Format criteria for better prompt
             role_display = criteria.get_role_string()
+            industry_display = criteria.get_industry_string()
+            location_display = criteria.get_location_string()
             
             generation_prompt = f"""
             Generate {criteria.count} realistic B2B leads with the following criteria:
             
             Target Role: {role_display}
-            Industry: {criteria.industry}
+            Industry: {industry_display}
             Company Size: {criteria.company_size}
-            Location: {criteria.location}
+            Location: {location_display}
             
             {f"Company Context: {company_context}" if company_context else ""}
             {f"Target Audience Info: {target_audience}" if target_audience else ""}
@@ -194,7 +229,8 @@ class ProspectorTool:
                     continue
             
             role_display = criteria.get_role_string()
-            logger.info(f"Generated {len(leads)} leads for criteria: {role_display} in {criteria.industry}")
+            industry_display = criteria.get_industry_string()
+            logger.info(f"Generated {len(leads)} leads for criteria: {role_display} in {industry_display}")
             return leads
             
         except Exception as e:
@@ -263,7 +299,7 @@ class ProspectorTool:
                 "csv_filename": csv_result["filename"],
                 "csv_content": csv_result["csv_content"],
                 "lead_count": len(leads),
-                "message": f"Successfully generated {len(leads)} leads for {criteria.get_role_string()} in {criteria.industry}"
+                "message": f"Successfully generated {len(leads)} leads for {criteria.get_role_string()} in {criteria.get_industry_string()}"
             }
             
         except Exception as e:
@@ -362,21 +398,24 @@ class ProspectorTool:
             
             Extract the following information with high accuracy:
             - target_role: The job title/role - can be a single string OR array of strings if multiple roles mentioned (e.g., "CTO", ["CTO", "VP Engineering"], "Founder")
-            - industry: The industry/sector (e.g., "SaaS", "Fintech", "Healthcare")
+            - industry: The industry/sector - can be a single string OR array of strings if multiple industries mentioned (e.g., "SaaS", ["SaaS", "Fintech"], "Healthcare")
             - company_size: Company size range (e.g., "10-50", "50-200", "500+")
-            - location: Geographic location (e.g., "San Francisco", "New York", "Remote")
+            - location: Geographic location - can be a single string OR array of strings if multiple locations mentioned (e.g., "San Francisco", ["San Francisco", "New York"], "Remote")
             - count: Number of leads requested (default 50)
             
-            IMPORTANT: If multiple roles are mentioned (e.g., "CTOs and VPs"), return target_role as an array like ["CTO", "VP"].
+            IMPORTANT: 
+            - If multiple roles are mentioned (e.g., "CTOs and VPs"), return target_role as an array like ["CTO", "VP"]
+            - If multiple industries are mentioned (e.g., "SaaS and Fintech"), return industry as an array like ["SaaS", "Fintech"]
+            - If multiple locations are mentioned (e.g., "SF and NYC"), return location as an array like ["San Francisco", "New York"]
             
             Consider the company's target audience, market conditions, and industry trends when parsing.
             
             Return as JSON format:
             {{
-                "target_role": "extracted_role",
-                "industry": "extracted_industry", 
+                "target_role": "extracted_role" OR ["role1", "role2"],
+                "industry": "extracted_industry" OR ["industry1", "industry2"], 
                 "company_size": "extracted_size",
-                "location": "extracted_location",
+                "location": "extracted_location" OR ["location1", "location2"],
                 "count": extracted_number
             }}
             """
@@ -422,14 +461,16 @@ class ProspectorTool:
             
             # Enhanced generation prompt
             role_display = criteria.get_role_string()
+            industry_display = criteria.get_industry_string()
+            location_display = criteria.get_location_string()
             
             generation_prompt = f"""
             Generate {criteria.count} realistic B2B leads with enhanced market intelligence:
             
             Target Role: {role_display}
-            Industry: {criteria.industry}
+            Industry: {industry_display}
             Company Size: {criteria.company_size}
-            Location: {criteria.location}
+            Location: {location_display}
             
             Company Context: {json.dumps(fused_knowledge.get("company_info", {}))}
             Target Audience: {json.dumps(fused_knowledge.get("target_audience", {}))}
@@ -498,7 +539,8 @@ class ProspectorTool:
                     continue
             
             role_display = criteria.get_role_string()
-            logger.info(f"Generated {len(leads)} enhanced leads for criteria: {role_display} in {criteria.industry}")
+            industry_display = criteria.get_industry_string()
+            logger.info(f"Generated {len(leads)} enhanced leads for criteria: {role_display} in {industry_display}")
             return leads
             
         except Exception as e:

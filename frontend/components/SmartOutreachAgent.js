@@ -181,7 +181,11 @@ export default function SmartOutreachAgent({ isOpen, onClose, leads = [], campai
                     </div>
                     <div className="flex justify-between">
                       <span className="text-gray-600">Channels:</span>
-                      <span className="font-medium">{outreachPlan.channels?.join(', ') || 'Email, LinkedIn'}</span>
+                      <span className="font-medium">
+                        {outreachPlan.channels && typeof outreachPlan.channels === 'object' 
+                          ? Object.keys(outreachPlan.channels).map(c => c.charAt(0).toUpperCase() + c.slice(1)).join(', ')
+                          : 'Email, LinkedIn'}
+                      </span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-gray-600">Sequence Length:</span>

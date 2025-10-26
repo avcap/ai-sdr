@@ -18,9 +18,14 @@ class CampaignIntelligenceService:
     
     def __init__(self):
         self.openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        self.claude_client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
         self.knowledge_service = KnowledgeService()
         self.supabase = SupabaseService()
+        
+        # Add Claude client for LLM analysis
+        import anthropic
+        self.claude_client = anthropic.Anthropic(
+            api_key=os.getenv('ANTHROPIC_API_KEY')
+        )
         
     def analyze_documents_for_campaigns(self, tenant_id: str, user_id: str) -> Dict[str, Any]:
         """
@@ -39,31 +44,25 @@ class CampaignIntelligenceService:
             # Get user's knowledge from uploaded documents
             knowledge = self.knowledge_service.get_user_knowledge(tenant_id, user_id, task_type='campaign')
             
-            # For now, always use document-based suggestions since knowledge extraction is not working
-            logger.info("Using document-based suggestions (knowledge extraction temporarily disabled)")
-            mock_documents = [
-                {
-                    'filename': 'avius_llc_company_info.txt',
-                    'document_type': 'company_info',
-                    'id': '01ea423d-1fb4-4af8-9922-2431c2320b47'
-                },
-                {
-                    'filename': 'Sales_Book-_Free_eBook-MEP.pdf',
-                    'document_type': 'sales_training',
-                    'id': '14d9a90e-a08c-4fe0-801d-56c6c231b039'
-                }
-            ]
+            # Check if user has uploaded any documents
+            if not knowledge or knowledge.get('source_count', 0) == 0:
+                logger.warning(f"No documents found for user {user_id} - cannot generate suggestions")
+                return self._get_default_campaign_insights()
             
-            logger.info(f"Calling _get_document_based_suggestions with {len(mock_documents)} documents")
-            result = self._get_document_based_suggestions(mock_documents)
-            logger.info(f"Document-based suggestions result: {result}")
-            return result
+            logger.info(f"Retrieved knowledge from {knowledge.get('source_count', 0)} sources")
             
             # Extract campaign context from knowledge
             campaign_context = self._extract_campaign_context(knowledge)
+            campaign_context['tenant_id'] = tenant_id
+            campaign_context['user_id'] = user_id
             
-            # Generate LLM-powered suggestions
-            suggestions = self._generate_llm_suggestions(campaign_context)
+            # Try to generate LLM-powered suggestions
+            try:
+                suggestions = self._generate_llm_suggestions(campaign_context, count=3)
+            except Exception as llm_error:
+                # LLM failed but user HAS documents - use knowledge-based fallback
+                logger.error(f"LLM generation failed: {llm_error}")
+                suggestions = self._handle_llm_error_fallback(llm_error, campaign_context)
             
             # Calculate insights
             insights = {
@@ -74,7 +73,8 @@ class CampaignIntelligenceService:
                 'competitive_positioning': campaign_context.get('competitive_advantages', []),
                 'suggested_campaigns': suggestions,
                 'document_count': knowledge.get('source_count', 0),
-                'analysis_timestamp': datetime.now().isoformat()
+                'analysis_timestamp': datetime.now().isoformat(),
+                'has_knowledge': True
             }
             
             logger.info(f"Generated {len(suggestions)} campaign suggestions")
@@ -82,9 +82,9 @@ class CampaignIntelligenceService:
             
         except Exception as e:
             logger.error(f"Error analyzing documents for campaigns: {e}")
-            logger.error(f"Exception type: {type(e)}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
+            # Major error - return no suggestions
             return self._get_default_campaign_insights()
     
     def generate_prompt_suggestions(self, knowledge: Dict[str, Any], count: int = 3) -> List[Dict[str, Any]]:
@@ -114,87 +114,177 @@ class CampaignIntelligenceService:
     
     def _extract_campaign_context(self, knowledge: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Extract campaign-relevant context from knowledge.
+        Extract campaign-relevant context from aggregated knowledge.
         
         Args:
-            knowledge: User's aggregated knowledge
+            knowledge: User's aggregated knowledge from knowledge_service
             
         Returns:
-            Dict containing campaign context
+            Dict containing campaign context for LLM
         """
+        # Extract real data from aggregated knowledge
+        company_info = knowledge.get('company_info', {})
+        
         context = {
-            'company_name': 'Your Company',
-            'industry': 'Technology',
-            'products': [],
-            'target_audience': {},
-            'sales_approach': '',
-            'competitive_advantages': [],
-            'value_propositions': [],
-            'key_messages': []
+            'company_name': company_info.get('company_name', 'Your Company'),
+            'industry': company_info.get('industry', knowledge.get('industry_context', {}).get('industry', 'Technology')),
+            'products': knowledge.get('products', []),
+            'target_audience': knowledge.get('target_audience', {}),
+            'sales_approach': knowledge.get('sales_approach', ''),
+            'competitive_advantages': knowledge.get('competitive_advantages', []),
+            'value_propositions': knowledge.get('value_propositions', []),
+            'key_messages': knowledge.get('key_messages', []),
+            'sales_methodologies': knowledge.get('sales_methodologies', []),
+            'source_count': knowledge.get('source_count', 0)
         }
         
-        # Extract company info
-        company_info = knowledge.get('company_info', {})
-        if company_info:
-            context['company_name'] = company_info.get('company_name', 'Your Company')
-            context['industry'] = company_info.get('industry', 'Technology')
-            context['sales_approach'] = company_info.get('sales_approach', '')
-        
-        # Extract products
-        products = knowledge.get('products', [])
-        if products:
-            context['products'] = [p.get('name', '') for p in products if isinstance(p, dict)]
-        
-        # Extract target audience
-        target_audience = knowledge.get('target_audience', {})
-        if target_audience:
-            context['target_audience'] = {
-                'buyer_personas': target_audience.get('buyer_personas', ['CTOs', 'VPs']),
-                'company_sizes': target_audience.get('company_sizes', ['50-200']),
-                'industries': target_audience.get('industries', [context['industry']]),
-                'pain_points': target_audience.get('pain_points', [])
-            }
-        
-        # Extract competitive advantages
-        competitive_advantages = knowledge.get('competitive_advantages', [])
-        if competitive_advantages:
-            context['competitive_advantages'] = competitive_advantages
-        
-        # Extract value propositions
-        value_propositions = knowledge.get('value_propositions', [])
-        if value_propositions:
-            context['value_propositions'] = value_propositions
-        
-        # Extract key messages
-        key_messages = knowledge.get('key_messages', [])
-        if key_messages:
-            context['key_messages'] = key_messages
+        logger.info(f"📊 Extracted campaign context: {context['company_name']} in {context['industry']}")
         
         return context
     
-    def _generate_llm_suggestions(self, context: Dict[str, Any], count: int = 3) -> List[Dict[str, Any]]:
+    def _generate_llm_suggestions(self, campaign_context: Dict[str, Any], count: int = 3) -> List[Dict[str, Any]]:
         """
-        Generate campaign suggestions using LLM.
+        Use Claude with adaptive sales strategies to generate contextual campaign suggestions.
         
         Args:
-            context: Campaign context extracted from documents
+            campaign_context: Extracted campaign context from documents
             count: Number of suggestions to generate
             
         Returns:
-            List of suggestion dictionaries
+            List of LLM-generated campaign suggestions with adaptive strategies
         """
         try:
-            # Prepare context for LLM
-            context_summary = self._prepare_context_for_llm(context)
+            import hashlib
+            from services.sales_playbook_service import SalesPlaybookService
             
-            # Use Claude for better reasoning
-            suggestions = self._generate_with_claude(context_summary, count)
+            # Get adaptive sales strategies
+            playbook_service = SalesPlaybookService()
+            tenant_id = campaign_context.get('tenant_id')
+            user_id = campaign_context.get('user_id')
             
-            return suggestions
+            adaptive_strategies = playbook_service.get_adaptive_strategies(
+                tenant_id, user_id, campaign_context
+            )
+            
+            # Build comprehensive context from knowledge
+            company_name = campaign_context.get('company_name', 'Your Company')
+            industry = campaign_context.get('industry', 'Technology')
+            products = campaign_context.get('products', [])
+            target_audience = campaign_context.get('target_audience', {})
+            value_props = campaign_context.get('value_propositions', [])
+            sales_approach = campaign_context.get('sales_approach', '')
+            competitive_advantages = campaign_context.get('competitive_advantages', [])
+            
+            # Format strategies for prompt
+            strategy_source = adaptive_strategies.get('source', 'universal')
+            strategies = adaptive_strategies.get('strategies', {})
+            strategy_confidence = adaptive_strategies.get('confidence', 0.5)
+            strategy_reasoning = adaptive_strategies.get('reasoning', '')
+            
+            # Create enhanced prompt with adaptive strategies
+            analysis_prompt = f"""
+You are an expert SDR campaign strategist. Generate {count} highly specific, actionable campaign suggestions.
+
+COMPANY PROFILE:
+- Company: {company_name}
+- Industry: {industry}
+- Products/Services: {', '.join(products[:5]) if products else 'Not specified'}
+- Target Audience: {json.dumps(target_audience, indent=2)}
+- Value Propositions: {', '.join(value_props[:3]) if value_props else 'Not specified'}
+- Sales Approach: {sales_approach or 'Not specified'}
+- Competitive Advantages: {', '.join(competitive_advantages[:3]) if competitive_advantages else 'Not specified'}
+
+SALES STRATEGY FRAMEWORK (Confidence: {strategy_confidence:.0%}):
+Source: {strategy_source}
+{strategy_reasoning}
+
+Framework Details:
+{json.dumps(strategies, indent=2)}
+
+INSTRUCTIONS:
+Generate {count} unique campaign suggestions that:
+1. Apply the sales strategy framework above
+2. Are specific to this company's offerings and target market
+3. Include concrete prospecting criteria (roles, company sizes, industries, qualifying criteria)
+4. Reference specific pain points, value propositions, or trigger events
+5. Include the recommended messaging approach from the framework
+6. Specify multi-touch sequence if applicable
+7. Include actionable prompts ready to execute
+
+For each suggestion, provide:
+- title: Compelling campaign title (max 60 chars)
+- prompt: Complete, specific prospecting prompt with target roles, company size, industry, and qualifying criteria
+- reasoning: Why this campaign fits the company's profile AND the selected sales framework (2-3 sentences)
+- confidence: Score from 0.0-1.0 based on how well company data + framework supports this campaign
+- category: Campaign category (executive_prospecting, mid_market, enterprise_focus, industry_specific, problem_focused, trigger_based)
+- framework_application: How you applied the sales framework (1 sentence)
+- expected_outcome: What results to expect based on framework best practices
+
+Return ONLY valid JSON array:
+[
+    {{
+        "title": "...",
+        "prompt": "...",
+        "reasoning": "...",
+        "confidence": 0.85,
+        "category": "...",
+        "framework_application": "...",
+        "expected_outcome": "..."
+    }}
+]
+"""
+            
+            # Call Claude for analysis
+            logger.info(f"🤖 Calling Claude with adaptive strategies (source: {strategy_source})")
+            
+            response = self.claude_client.messages.create(
+                model="claude-3-haiku-20240307",  # Use Haiku (available in user's API)
+                max_tokens=2500,
+                temperature=0.7,  # Allow some creativity
+                messages=[{
+                    "role": "user",
+                    "content": analysis_prompt
+                }]
+            )
+            
+            # Parse Claude's response
+            suggestions_text = response.content[0].text.strip()
+            
+            # Extract JSON from response (handle code blocks)
+            if "```json" in suggestions_text:
+                suggestions_text = suggestions_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in suggestions_text:
+                suggestions_text = suggestions_text.split("```")[1].split("```")[0].strip()
+            
+            suggestions = json.loads(suggestions_text)
+            
+            # Add metadata to each suggestion
+            for i, suggestion in enumerate(suggestions):
+                suggestion['id'] = f"llm_{hashlib.md5(suggestion['title'].encode()).hexdigest()[:8]}"
+                suggestion['generated_at'] = datetime.now().isoformat()
+                suggestion['model_used'] = 'claude-3-haiku'
+                suggestion['strategy_source'] = strategy_source
+                suggestion['strategy_confidence'] = strategy_confidence
+            
+            logger.info(f"✅ Generated {len(suggestions)} adaptive suggestions")
+            
+            # Save suggestions to database for tracking
+            if tenant_id and user_id:
+                for suggestion in suggestions:
+                    self._save_suggestion_to_db(suggestion, tenant_id, user_id)
+            
+            return suggestions[:count]
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse Claude's response as JSON: {e}")
+            logger.error(f"Response text: {suggestions_text if 'suggestions_text' in locals() else 'N/A'}")
+            raise
             
         except Exception as e:
             logger.error(f"Error generating LLM suggestions: {e}")
-            return self._get_fallback_suggestions()
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            raise
     
     def _prepare_context_for_llm(self, context: Dict[str, Any]) -> str:
         """
@@ -336,78 +426,132 @@ Focus on creating campaigns that would be most effective for this company's prod
         else:
             return 'general'
     
-    def _save_suggestion_to_db(self, suggestion: Dict[str, Any]) -> None:
+    def _save_suggestion_to_db(self, suggestion: Dict[str, Any], tenant_id: str = None, user_id: str = None) -> bool:
         """
-        Save suggestion to database for future reference.
+        Save campaign suggestion to database for analytics and tracking.
         
         Args:
             suggestion: Suggestion dictionary
+            tenant_id: User's tenant ID
+            user_id: User's ID
+            
+        Returns:
+            True if saved successfully
         """
+        if not tenant_id or not user_id:
+            logger.warning("Cannot save suggestion: missing tenant_id or user_id")
+            return False
+        
         try:
-            # This would be implemented when we add the Supabase methods
-            logger.debug(f"Would save suggestion: {suggestion['title']}")
+            suggestion_data = {
+                'tenant_id': tenant_id,
+                'user_id': user_id,
+                'suggestion_type': suggestion.get('category', 'general'),
+                'prompt_text': suggestion.get('prompt', ''),
+                'reasoning': suggestion.get('reasoning', ''),
+                'confidence_score': suggestion.get('confidence', 0.7),
+                'metadata': {
+                    'title': suggestion.get('title', ''),
+                    'model_used': suggestion.get('model_used', 'claude'),
+                    'generated_at': suggestion.get('generated_at', datetime.now().isoformat())
+                }
+            }
+            
+            response = self.supabase.client.from_('campaign_suggestions').insert(suggestion_data).execute()
+            
+            if response.data:
+                logger.info(f"💾 Saved suggestion to database: {suggestion.get('title', 'Untitled')}")
+                return True
+            
+            return False
+            
         except Exception as e:
-            logger.error(f"Error saving suggestion to DB: {e}")
+            logger.error(f"Error saving suggestion to database: {e}")
+            return False
     
     def _get_default_campaign_insights(self) -> Dict[str, Any]:
         """
-        Get default campaign insights when no documents are available.
-        
-        Returns:
-            Default insights dictionary
+        Return default insights when no knowledge is available.
+        User MUST upload documents to get suggestions.
         """
         return {
             'target_audience': {
-                'buyer_personas': ['CTOs', 'VPs of Engineering'],
-                'company_sizes': ['50-200'],
-                'industries': ['Technology'],
-                'pain_points': ['Manual processes', 'Inefficiency']
+                'buyer_personas': [],
+                'company_sizes': [],
+                'industries': [],
+                'pain_points': []
             },
-            'industry_focus': 'Technology',
-            'product_categories': ['AI Solutions'],
-            'sales_approach': 'Consultative selling',
-            'competitive_positioning': ['Innovation', 'Quality'],
-            'suggested_campaigns': self._get_fallback_suggestions(),
+            'industry_focus': '',
+            'product_categories': [],
+            'sales_approach': '',
+            'competitive_positioning': [],
+            'suggested_campaigns': [],  # EMPTY - no suggestions without documents
             'document_count': 0,
-            'analysis_timestamp': datetime.now().isoformat()
+            'analysis_timestamp': datetime.now().isoformat(),
+            'has_knowledge': False,
+            'message': 'No training data available. Please upload documents in the Knowledge Bank to get AI-powered campaign suggestions.',
+            'call_to_action': 'Upload company information, product details, sales training materials, or website links in the Knowledge Bank to enable smart campaign suggestions.'
         }
     
-    def _get_fallback_suggestions(self) -> List[Dict[str, Any]]:
+    def _handle_llm_error_fallback(self, error: Exception, campaign_context: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
-        Get fallback suggestions when LLM generation fails.
+        Fallback when LLM API fails BUT user has uploaded documents.
+        Uses extracted knowledge to create basic suggestions without LLM analysis.
         
+        Only called when:
+        - User HAS documents uploaded
+        - Claude API fails (rate limit, timeout, error)
+        
+        Args:
+            error: The exception that occurred
+            campaign_context: Extracted context from user's documents
+            
         Returns:
-            List of fallback suggestions
+            List of basic suggestions derived from extracted knowledge (not generic)
         """
-        return [
-            {
-                'id': 'fallback_1',
-                'title': 'Technology CTO Prospecting',
-                'prompt': 'Find me 15 CTOs at 50-200 employee technology companies who are evaluating AI solutions',
-                'reasoning': 'General technology industry focus with CTO targeting',
-                'confidence': 0.6,
-                'category': 'tech_industry',
-                'generated_at': datetime.now().isoformat()
-            },
-            {
-                'id': 'fallback_2',
-                'title': 'Mid-Market VP Outreach',
-                'prompt': 'Target VPs of Engineering at mid-market companies (100-500 employees) in the software industry',
-                'reasoning': 'Mid-market focus with engineering leadership targeting',
-                'confidence': 0.6,
-                'category': 'executive_prospecting',
-                'generated_at': datetime.now().isoformat()
-            },
-            {
-                'id': 'fallback_3',
-                'title': 'Enterprise Decision Makers',
-                'prompt': 'Find enterprise decision makers at companies with 200+ employees looking for automation solutions',
-                'reasoning': 'Enterprise focus with automation solution targeting',
-                'confidence': 0.6,
-                'category': 'enterprise_focus',
-                'generated_at': datetime.now().isoformat()
-            }
-        ]
+        logger.error(f"LLM API error, using knowledge-based fallback: {error}")
+        
+        company_name = campaign_context.get('company_name', 'Your Company')
+        industry = campaign_context.get('industry', 'your industry')
+        products = campaign_context.get('products', [])
+        target_audience = campaign_context.get('target_audience', {})
+        
+        # Extract target roles from knowledge
+        buyer_personas = target_audience.get('buyer_personas', [])
+        if not buyer_personas:
+            buyer_personas = ['decision makers', 'executives']
+        
+        # Create 1-2 basic suggestions using extracted knowledge
+        suggestions = []
+        
+        # Suggestion 1: Based on company info
+        suggestions.append({
+            'id': 'knowledge_fallback_1',
+            'title': f'{company_name} Target Audience Outreach',
+            'prompt': f'Find me {", ".join(buyer_personas[:2])} at companies in {industry}',
+            'reasoning': f'Based on your uploaded company information. (Note: Claude API unavailable - using basic suggestion from extracted knowledge)',
+            'confidence': 0.5,
+            'category': 'knowledge_based',
+            'generated_at': datetime.now().isoformat(),
+            'is_fallback': True,
+            'fallback_reason': 'llm_api_error'
+        })
+        
+        # Suggestion 2: If we have product info
+        if products:
+            suggestions.append({
+                'id': 'knowledge_fallback_2',
+                'title': f'{products[0]} Product-Focused Campaign',
+                'prompt': f'Target decision makers interested in {products[0]} solutions',
+                'reasoning': f'Based on your product information. (Note: Claude API unavailable - using basic suggestion from extracted knowledge)',
+                'confidence': 0.5,
+                'category': 'knowledge_based',
+                'generated_at': datetime.now().isoformat(),
+                'is_fallback': True,
+                'fallback_reason': 'llm_api_error'
+            })
+        
+        return suggestions[:2]  # Return 1-2 suggestions based on available knowledge
     
     def _extract_knowledge_from_documents(self, documents: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
@@ -497,99 +641,7 @@ Focus on creating campaigns that would be most effective for this company's prod
         except Exception as e:
             logger.error(f"Error saving extracted knowledge: {e}")
     
-    def _get_document_based_suggestions(self, documents: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        Generate suggestions based on document filenames and types when knowledge extraction fails.
-        
-        Args:
-            documents: List of document records
-            
-        Returns:
-            Campaign insights with document-based suggestions
-        """
-        try:
-            logger.info(f"Generating document-based suggestions for {len(documents)} documents")
-            
-            # Analyze document types and filenames
-            company_docs = [d for d in documents if d.get('document_type') == 'company_info']
-            sales_docs = [d for d in documents if d.get('document_type') == 'sales_training']
-            product_docs = [d for d in documents if d.get('document_type') == 'products']
-            
-            # Generate suggestions based on document analysis
-            suggestions = []
-            
-            if company_docs:
-                # Extract company name from filename if possible
-                company_name = "Your Company"
-                for doc in company_docs:
-                    filename = doc.get('filename', '').lower()
-                    if 'avius' in filename:
-                        company_name = "Avius LLC"
-                        break
-                
-                suggestions.append({
-                    'id': 'doc_based_1',
-                    'title': f'{company_name} Executive Outreach',
-                    'prompt': f'Find me 15 CTOs and VPs at 50-200 employee technology companies who are evaluating AI solutions and automation tools',
-                    'reasoning': f'Based on {company_name} company information document',
-                    'confidence': 0.7,
-                    'category': 'executive_prospecting',
-                    'generated_at': datetime.now().isoformat()
-                })
-            
-            if sales_docs:
-                suggestions.append({
-                    'id': 'doc_based_2',
-                    'title': 'Sales Training Based Outreach',
-                    'prompt': 'Target decision makers at mid-market companies (100-500 employees) in the software and technology industry',
-                    'reasoning': 'Based on sales training methodology document',
-                    'confidence': 0.7,
-                    'category': 'mid_market',
-                    'generated_at': datetime.now().isoformat()
-                })
-            
-            if product_docs:
-                suggestions.append({
-                    'id': 'doc_based_3',
-                    'title': 'Product-Focused Prospecting',
-                    'prompt': 'Find enterprise decision makers at companies with 200+ employees looking for AI and automation solutions',
-                    'reasoning': 'Based on product information document',
-                    'confidence': 0.7,
-                    'category': 'enterprise_focus',
-                    'generated_at': datetime.now().isoformat()
-                })
-            
-            # Add fallback suggestions if we don't have enough
-            while len(suggestions) < 3:
-                suggestions.append({
-                    'id': f'fallback_{len(suggestions) + 1}',
-                    'title': 'Technology Industry Outreach',
-                    'prompt': 'Find technology decision makers at companies evaluating AI solutions',
-                    'reasoning': 'General technology industry focus',
-                    'confidence': 0.6,
-                    'category': 'tech_industry',
-                    'generated_at': datetime.now().isoformat()
-                })
-            
-            return {
-                'target_audience': {
-                    'buyer_personas': ['CTOs', 'VPs of Engineering'],
-                    'company_sizes': ['50-200', '200-500'],
-                    'industries': ['Technology', 'Software'],
-                    'pain_points': ['Manual processes', 'Inefficiency']
-                },
-                'industry_focus': 'Technology',
-                'product_categories': ['AI Solutions', 'Automation Tools'],
-                'sales_approach': 'Consultative selling',
-                'competitive_positioning': ['AI expertise', 'Innovation'],
-                'suggested_campaigns': suggestions[:3],  # Return top 3
-                'document_count': len(documents),
-                'analysis_timestamp': datetime.now().isoformat()
-            }
-            
-        except Exception as e:
-            logger.error(f"Error generating document-based suggestions: {e}")
-            return self._get_default_campaign_insights()
+    # _get_document_based_suggestions() method removed - replaced with real LLM analysis
     
     def get_cached_suggestions(self, tenant_id: str, user_id: str) -> Optional[List[Dict[str, Any]]]:
         """

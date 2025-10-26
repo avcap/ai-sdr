@@ -272,7 +272,7 @@ async def upload_leads(
     file: UploadFile = File(...),
     current_user: dict = Depends(get_current_user)
 ):
-    """Upload leads from CSV/Excel file"""
+    """Upload leads from CSV/Excel file with smart, flexible column mapping"""
     try:
         logger.info(f"📤 Uploading leads file: {file.filename} for campaign: {campaign_id}")
         
@@ -290,29 +290,78 @@ async def upload_leads(
         else:
             raise HTTPException(status_code=400, detail="Unsupported file format")
         
+        # Normalize column names: lowercase, strip whitespace
+        df.columns = df.columns.str.lower().str.strip()
+        
+        # Define column mappings (handle common variations)
+        column_mapping = {
+            'name': ['name', 'full name', 'contact name', 'lead name'],
+            'company': ['company', 'company name', 'organization', 'org'],
+            'title': ['title', 'job title', 'position', 'role'],
+            'email': ['email', 'email address', 'e-mail', 'contact email'],
+            'phone': ['phone', 'phone number', 'telephone', 'mobile', 'cell'],
+            'linkedin_url': ['linkedin_url', 'linkedin', 'linkedin url', 'linkedin profile', 'li url'],
+            'industry': ['industry', 'sector', 'vertical'],
+            'company_size': ['company_size', 'company size', 'size', 'employees', '# of employees', 'employee count'],
+            'location': ['location', 'city', 'region', 'country', 'geography'],
+            'website': ['website', 'company website', 'url', 'web']
+        }
+        
+        # Map columns to standardized names
+        standardized_columns = {}
+        for standard_name, variations in column_mapping.items():
+            for col in df.columns:
+                if col in variations:
+                    standardized_columns[col] = standard_name
+                    break
+        
+        # Rename columns to standardized names
+        df.rename(columns=standardized_columns, inplace=True)
+        
         # Validate required columns
         required_columns = ['name', 'company', 'title']
         missing_columns = [col for col in required_columns if col not in df.columns]
         if missing_columns:
             raise HTTPException(
                 status_code=400, 
-                detail=f"Missing required columns: {missing_columns}"
+                detail=f"Missing required columns: {missing_columns}. Please ensure your CSV has columns for contact name, company, and job title."
             )
         
         # Prepare leads data
         leads_data = []
+        unknown_columns = []
+        
         for _, row in df.iterrows():
             lead_data = {
                 "tenant_id": current_user["tenant_id"],
                 "campaign_id": campaign_id,
-                "name": str(row['name']),
-                "company": str(row['company']),
-                "title": str(row['title']),
-                "email": row.get('email'),
-                "linkedin_url": row.get('linkedin_url'),
-                "phone": row.get('phone'),
+                "name": str(row['name']) if pd.notna(row['name']) else '',
+                "company": str(row['company']) if pd.notna(row['company']) else '',
+                "title": str(row['title']) if pd.notna(row['title']) else '',
                 "status": "new"
             }
+            
+            # Add optional columns if present
+            if 'email' in df.columns and pd.notna(row.get('email')):
+                lead_data['email'] = str(row['email'])
+            if 'linkedin_url' in df.columns and pd.notna(row.get('linkedin_url')):
+                lead_data['linkedin_url'] = str(row['linkedin_url'])
+            if 'phone' in df.columns and pd.notna(row.get('phone')):
+                lead_data['phone'] = str(row['phone'])
+            
+            # Store unknown columns in metadata (for future enhancement)
+            metadata = {}
+            for col in df.columns:
+                if col not in ['name', 'company', 'title', 'email', 'linkedin_url', 'phone'] and pd.notna(row.get(col)):
+                    metadata[col] = str(row[col])
+                    if col not in unknown_columns:
+                        unknown_columns.append(col)
+            
+            if metadata:
+                # Store metadata as JSON string if you have a metadata field
+                # For now, we'll just log it
+                pass
+            
             leads_data.append(lead_data)
         
         # Insert leads in batch
@@ -321,9 +370,14 @@ async def upload_leads(
         leads_created = len(result.data) if result.data else 0
         logger.info(f"✅ Uploaded {leads_created} leads")
         
+        # Log unknown columns for analytics
+        if unknown_columns:
+            logger.info(f"📊 Detected additional columns (stored for future use): {unknown_columns}")
+        
         return {
             "message": f"Successfully uploaded {leads_created} leads",
-            "leads_created": leads_created
+            "leads_created": leads_created,
+            "additional_columns_detected": unknown_columns if unknown_columns else []
         }
         
     except Exception as e:

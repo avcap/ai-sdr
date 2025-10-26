@@ -484,6 +484,42 @@ class SupabaseService:
             }
     
     # ==============================================
+    # DOCUMENT MANAGEMENT
+    # ==============================================
+    
+    def get_user_documents(self, tenant_id: str, user_id: str) -> List[Dict[str, Any]]:
+        """
+        Get all uploaded documents for a user.
+        
+        Args:
+            tenant_id: User's tenant ID
+            user_id: User's ID
+            
+        Returns:
+            List of document records with id, filename, document_type, file_path, created_at
+        """
+        try:
+            response = (
+                self.client
+                .from_('uploaded_documents')
+                .select('id, filename, document_type, file_path, created_at, extracted_content')
+                .eq('tenant_id', tenant_id)
+                .eq('user_id', user_id)
+                .order('created_at', desc=True)
+                .execute()
+            )
+            
+            if response.data:
+                logger.info(f"Retrieved {len(response.data)} documents for user {user_id}")
+                return response.data
+            
+            return []
+            
+        except Exception as e:
+            logger.error(f"Error retrieving user documents: {e}")
+            return []
+    
+    # ==============================================
     # UTILITY METHODS
     # ==============================================
     
