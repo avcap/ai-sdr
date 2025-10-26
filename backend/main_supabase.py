@@ -763,7 +763,7 @@ async def execute_smart_campaign(
                 "message": "Smart campaign executed successfully",
                 "pipeline_id": result.get("pipeline_id", "adaptive_pipeline"),
                 "stages": result.get("stages", []),
-                "final_results": result.get("final_results", {}),
+                "final_results": result.get("final_results", result.get("campaign_results", {})),
                 "execution_time": result.get("execution_time", 0)
             }
             
@@ -1292,6 +1292,169 @@ async def get_predictive_analytics(
         
     except Exception as e:
         logger.error(f"❌ Error getting predictive analytics: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==============================================
+# CAMPAIGN INTELLIGENCE ENDPOINTS
+# ==============================================
+
+@app.get("/campaign-intelligence/suggestions")
+async def get_campaign_suggestions(
+    current_user: dict = Depends(get_current_user)
+):
+    """Get smart campaign suggestions based on uploaded documents"""
+    try:
+        logger.info(f"🧠 Getting campaign suggestions for user {current_user['user_id']}")
+        
+        from services.campaign_intelligence_service import CampaignIntelligenceService
+        
+        intelligence_service = CampaignIntelligenceService()
+        
+        # Check for cached suggestions first
+        cached_suggestions = intelligence_service.get_cached_suggestions(
+            current_user["tenant_id"], 
+            current_user["user_id"]
+        )
+        
+        if cached_suggestions:
+            logger.info("Returning cached suggestions")
+            return {
+                "success": True,
+                "suggestions": cached_suggestions,
+                "cached": True,
+                "timestamp": datetime.now().isoformat()
+            }
+        
+        # Generate new suggestions
+        insights = intelligence_service.analyze_documents_for_campaigns(
+            current_user["tenant_id"], 
+            current_user["user_id"]
+        )
+        
+        suggestions = insights.get("suggested_campaigns", [])
+        
+        return {
+            "success": True,
+            "suggestions": suggestions,
+            "insights": {
+                "target_audience": insights.get("target_audience", {}),
+                "industry_focus": insights.get("industry_focus", "Technology"),
+                "product_categories": insights.get("product_categories", []),
+                "document_count": insights.get("document_count", 0)
+            },
+            "cached": False,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting campaign suggestions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/campaign-intelligence/generate")
+async def generate_campaign_suggestions(
+    request: dict,
+    current_user: dict = Depends(get_current_user)
+):
+    """Force regenerate campaign suggestions (after new document upload)"""
+    try:
+        logger.info(f"🔄 Regenerating campaign suggestions for user {current_user['user_id']}")
+        
+        from services.campaign_intelligence_service import CampaignIntelligenceService
+        
+        intelligence_service = CampaignIntelligenceService()
+        
+        # Force generate new suggestions
+        insights = intelligence_service.analyze_documents_for_campaigns(
+            current_user["tenant_id"], 
+            current_user["user_id"]
+        )
+        
+        suggestions = insights.get("suggested_campaigns", [])
+        
+        return {
+            "success": True,
+            "suggestions": suggestions,
+            "insights": {
+                "target_audience": insights.get("target_audience", {}),
+                "industry_focus": insights.get("industry_focus", "Technology"),
+                "product_categories": insights.get("product_categories", []),
+                "document_count": insights.get("document_count", 0)
+            },
+            "regenerated": True,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error regenerating campaign suggestions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/campaign-intelligence/record-execution")
+async def record_campaign_execution(
+    request: dict,
+    current_user: dict = Depends(get_current_user)
+):
+    """Record campaign execution for learning"""
+    try:
+        prompt_data = request.get("prompt_data", {})
+        results = request.get("results", {})
+        
+        logger.info(f"📊 Recording campaign execution for user {current_user['user_id']}")
+        
+        from services.campaign_learning_service import CampaignLearningService
+        
+        learning_service = CampaignLearningService()
+        
+        execution_record = learning_service.record_campaign_execution(
+            current_user["tenant_id"],
+            current_user["user_id"],
+            prompt_data,
+            results
+        )
+        
+        return {
+            "success": True,
+            "execution_record": execution_record,
+            "message": "Campaign execution recorded for learning",
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error recording campaign execution: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/campaign-intelligence/insights")
+async def get_campaign_insights(
+    current_user: dict = Depends(get_current_user)
+):
+    """Get analysis insights about uploaded documents"""
+    try:
+        logger.info(f"🔍 Getting campaign insights for user {current_user['user_id']}")
+        
+        from services.campaign_intelligence_service import CampaignIntelligenceService
+        
+        intelligence_service = CampaignIntelligenceService()
+        
+        insights = intelligence_service.analyze_documents_for_campaigns(
+            current_user["tenant_id"], 
+            current_user["user_id"]
+        )
+        
+        return {
+            "success": True,
+            "insights": {
+                "target_audience": insights.get("target_audience", {}),
+                "industry_focus": insights.get("industry_focus", "Technology"),
+                "product_categories": insights.get("product_categories", []),
+                "sales_approach": insights.get("sales_approach", ""),
+                "competitive_positioning": insights.get("competitive_positioning", []),
+                "document_count": insights.get("document_count", 0),
+                "analysis_timestamp": insights.get("analysis_timestamp")
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting campaign insights: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":

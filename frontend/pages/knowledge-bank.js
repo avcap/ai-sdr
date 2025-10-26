@@ -112,6 +112,28 @@ export default function KnowledgeBank() {
   const handleUploadComplete = () => {
     setShowUploadModal(false);
     fetchKnowledgeBank(); // Refresh data
+    
+    // Trigger campaign suggestion regeneration
+    regenerateCampaignSuggestions();
+  };
+
+  const regenerateCampaignSuggestions = async () => {
+    try {
+      await fetch('/api/campaign-intelligence/generate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session?.accessToken || 'demo_token'}`
+        },
+        body: JSON.stringify({})
+      });
+      
+      // Show notification
+      setError('✅ New campaign suggestions generated based on your uploaded documents!');
+      setTimeout(() => setError(null), 5000);
+    } catch (error) {
+      console.error('Failed to regenerate suggestions:', error);
+    }
   };
 
   const handleWebsiteAddComplete = () => {

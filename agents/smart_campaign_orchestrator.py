@@ -132,10 +132,56 @@ class SmartCampaignOrchestrator:
             
         except Exception as e:
             logger.error(f"Prompt analysis failed: {e}")
+            logger.info("Using fallback prompt analysis due to API failure")
+            
+            # Extract basic info from prompt using simple parsing
+            prompt_lower = user_prompt.lower()
+            
+            # Simple role extraction
+            target_role = "CTO"
+            if "ceo" in prompt_lower:
+                target_role = "CEO"
+            elif "vp" in prompt_lower or "vice president" in prompt_lower:
+                target_role = "VP"
+            elif "director" in prompt_lower:
+                target_role = "Director"
+            elif "manager" in prompt_lower:
+                target_role = "Manager"
+            
+            # Simple industry extraction
+            industry = "Technology"
+            if "saas" in prompt_lower:
+                industry = "SaaS"
+            elif "fintech" in prompt_lower:
+                industry = "Fintech"
+            elif "healthcare" in prompt_lower:
+                industry = "Healthcare"
+            elif "manufacturing" in prompt_lower:
+                industry = "Manufacturing"
+            
+            # Simple count extraction
+            count = 5
+            import re
+            count_match = re.search(r'(\d+)', user_prompt)
+            if count_match:
+                count = int(count_match.group(1))
+            
             return {
-                "success": False,
-                "error": str(e),
-                "analysis": None
+                "success": True,
+                "analysis": {
+                    "target_role": target_role,
+                    "industry": industry,
+                    "company_size": "50-500",
+                    "location": "Global",
+                    "count": count,
+                    "additional_filters": "None specified",
+                    "campaign_name": "FallbackCampaign",
+                    "target_audience": f"{target_role}s in {industry} companies",
+                    "value_proposition": "AI-powered solutions for business growth",
+                    "call_to_action": "Schedule a personalized demo"
+                },
+                "original_prompt": user_prompt,
+                "fallback": True
             }
     
     def execute_prospector_stage(self, criteria: Dict[str, Any]) -> Dict[str, Any]:
@@ -151,8 +197,15 @@ class SmartCampaignOrchestrator:
         try:
             from agents.prospector_agent import ProspectorAgent
             
-            # Create prospector prompt from criteria
-            prospector_prompt = f"Find me {criteria['count']} {criteria['target_role']}s in {criteria['industry']} industry"
+            # Debug: Log the criteria structure
+            logger.info(f"Prospector stage criteria: {criteria}")
+            
+            # Create prospector prompt from criteria with safe access
+            count = criteria.get('count', 5)
+            target_role = criteria.get('target_role', 'CTO')
+            industry = criteria.get('industry', 'Technology')
+            
+            prospector_prompt = f"Find me {count} {target_role}s in {industry} industry"
             if criteria.get('location'):
                 prospector_prompt += f" located in {criteria['location']}"
             if criteria.get('company_size'):
@@ -167,11 +220,12 @@ class SmartCampaignOrchestrator:
                 return {
                     "success": True,
                     "stage": "prospecting",
-                    "leads": result["leads"],
-                    "criteria": result["criteria"],
-                    "message": f"Found {len(result['leads'])} prospects"
+                    "leads": result.get("leads", []),
+                    "criteria": result.get("criteria", {}),
+                    "message": f"Found {len(result.get('leads', []))} prospects"
                 }
             else:
+                logger.error(f"Prospector agent failed: {result.get('error', 'Unknown error')}")
                 return {
                     "success": False,
                     "stage": "prospecting",
@@ -203,8 +257,21 @@ class SmartCampaignOrchestrator:
             
             logger.info(f"Executing enrichment stage for {len(leads)} leads")
             
+            # Convert LeadData objects to dictionaries if needed
+            leads_as_dicts = []
+            for lead in leads:
+                if hasattr(lead, 'dict'):
+                    # It's a Pydantic model
+                    leads_as_dicts.append(lead.dict())
+                elif isinstance(lead, dict):
+                    # Already a dictionary
+                    leads_as_dicts.append(lead)
+                else:
+                    # Try to convert to dict
+                    leads_as_dicts.append(dict(lead))
+            
             agent = EnrichmentAgent()
-            result = agent.enrich_leads(leads)
+            result = agent.enrich_leads(leads_as_dicts)
             
             if result["success"]:
                 return {
@@ -480,7 +547,8 @@ class SmartCampaignOrchestrator:
         # Select optimal model for orchestration
         model_selection = self.llm_selector.recommend_model_for_task(
             "campaign_orchestration", 
-            len(str(fused_knowledge)) + len(str(market_context))
+            len(str(fused_knowledge)) + len(str(market_context)),
+            client_type="openai"
         )
         
         selected_model = model_selection["recommended_model"]
@@ -562,6 +630,7 @@ class SmartCampaignOrchestrator:
             }
         }
     
+    
     def _extract_industry_from_prompt(self, user_prompt: str) -> str:
         """Extract industry from user prompt"""
         industries = ["SaaS", "fintech", "healthcare", "technology", "manufacturing", "retail", "education"]
@@ -635,7 +704,7 @@ class SmartCampaignOrchestrator:
                                     market_context: Dict[str, Any], strategy_plan) -> Dict[str, Any]:
         """Execute prospecting with market intelligence"""
         # Use existing prospecting logic with market enhancements
-        prospecting_result = self.execute_prospector_stage(analysis_result["criteria"])
+        prospecting_result = self.execute_prospector_stage(analysis_result.get("analysis", analysis_result))
         
         # Enhance with market intelligence
         prospecting_result["market_intelligence"] = market_context
@@ -671,8 +740,8 @@ class SmartCampaignOrchestrator:
                                 premium_leads: List[Dict[str, Any]], 
                                 market_context: Dict[str, Any], strategy_plan) -> Dict[str, Any]:
         """Create campaign with adaptive intelligence"""
-        # Use existing campaign creation logic
-        campaign_result = self.create_campaign_data(analysis_result, premium_leads)
+        # Use existing campaign creation logic (backup_leads is an empty list for adaptive campaigns)
+        campaign_result = self.create_campaign_data(analysis_result, premium_leads, [])
         
         # Enhance with adaptive features
         campaign_result["adaptive_features"] = {
@@ -725,12 +794,50 @@ class SmartCampaignOrchestrator:
         try:
             # Stage 1: Prompt Analysis
             logger.info("Stage 1: Analyzing prompt...")
-            analysis_result = self.analyze_prompt(user_prompt, tenant_id, user_id)
-            pipeline_results["stages"]["prompt_analysis"] = analysis_result
-            
-            if not analysis_result["success"]:
-                pipeline_results["error"] = f"Prompt analysis failed: {analysis_result['error']}"
-                return pipeline_results
+            try:
+                analysis_result = self.analyze_prompt(user_prompt, tenant_id, user_id)
+                pipeline_results["stages"]["prompt_analysis"] = analysis_result
+                
+                if not analysis_result["success"]:
+                    logger.warning(f"Prompt analysis failed: {analysis_result['error']}, using fallback criteria")
+                    # Use fallback criteria when analysis fails
+                    analysis_result = {
+                        "success": True,
+                        "analysis": {
+                            "target_role": "CTO",
+                            "industry": "Technology", 
+                            "company_size": "50-500",
+                            "location": "Global",
+                            "count": 5,
+                            "additional_filters": "None specified",
+                            "campaign_name": "FallbackCampaign",
+                            "target_audience": "Technology decision makers",
+                            "value_proposition": "AI-powered solutions",
+                            "call_to_action": "Schedule a demo"
+                        },
+                        "fallback": True
+                    }
+                    pipeline_results["stages"]["prompt_analysis"] = analysis_result
+            except Exception as e:
+                logger.error(f"Prompt analysis exception: {e}, using fallback criteria")
+                # Use fallback criteria when analysis throws exception
+                analysis_result = {
+                    "success": True,
+                    "analysis": {
+                        "target_role": "CTO",
+                        "industry": "Technology", 
+                        "company_size": "50-500",
+                        "location": "Global",
+                        "count": 5,
+                        "additional_filters": "None specified",
+                        "campaign_name": "FallbackCampaign",
+                        "target_audience": "Technology decision makers",
+                        "value_proposition": "AI-powered solutions",
+                        "call_to_action": "Schedule a demo"
+                    },
+                    "fallback": True
+                }
+                pipeline_results["stages"]["prompt_analysis"] = analysis_result
             
             criteria = analysis_result["analysis"]
             

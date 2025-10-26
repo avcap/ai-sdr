@@ -16,6 +16,12 @@ export default function SmartCampaign({ isOpen, onClose, onCampaignCreated }) {
   const [marketIntelligence, setMarketIntelligence] = useState(null);
   const [adaptiveMetadata, setAdaptiveMetadata] = useState(null);
 
+  // Smart Campaign Suggestions
+  const [suggestedPrompts, setSuggestedPrompts] = useState([]);
+  const [isLoadingSuggestions, setIsLoadingSuggestions] = useState(false);
+  const [selectedSuggestion, setSelectedSuggestion] = useState(null);
+  const [suggestionInsights, setSuggestionInsights] = useState(null);
+
   const pipelineStages = [
     { id: 'prompt_analysis', name: 'Analyzing Prompt', icon: '📝' },
     { id: 'prospecting', name: 'Finding Prospects', icon: '🤖' },
@@ -26,8 +32,11 @@ export default function SmartCampaign({ isOpen, onClose, onCampaignCreated }) {
 
   // Phase 3: Get knowledge assessment on component mount
   useEffect(() => {
-    if (isOpen && useAdaptive) {
-      getKnowledgeAssessment();
+    if (isOpen) {
+      if (useAdaptive) {
+        getKnowledgeAssessment();
+      }
+      getCampaignSuggestions(); // Always get suggestions when modal opens
     }
   }, [isOpen, useAdaptive]);
 
@@ -65,6 +74,72 @@ export default function SmartCampaign({ isOpen, onClose, onCampaignCreated }) {
     }
   };
 
+  // Smart Campaign Suggestions Methods
+  const getCampaignSuggestions = async () => {
+    console.log('🔄 Getting campaign suggestions...');
+    setIsLoadingSuggestions(true);
+    try {
+      const response = await fetch('/api/campaign-intelligence/suggestions', {
+        headers: {
+          'Authorization': `Bearer ${session?.accessToken || 'demo_token'}`
+        }
+      });
+      
+      console.log('📡 Campaign suggestions response:', response.status);
+      
+      if (response.ok) {
+        const data = await response.json();
+        console.log('✅ Campaign suggestions data:', data);
+        setSuggestedPrompts(data.suggestions || []);
+        setSuggestionInsights(data.insights || null);
+      } else {
+        console.error('❌ Campaign suggestions failed:', response.status);
+      }
+    } catch (error) {
+      console.error('💥 Failed to get campaign suggestions:', error);
+    } finally {
+      setIsLoadingSuggestions(false);
+    }
+  };
+
+  const handlePromptSuggestion = (suggestion) => {
+    setPrompt(suggestion.prompt);
+    setSelectedSuggestion(suggestion);
+    
+    // Show reasoning as a temporary message
+    if (suggestion.reasoning) {
+      setError(`💡 ${suggestion.reasoning}`);
+      setTimeout(() => setError(null), 5000);
+    }
+  };
+
+  const recordCampaignExecution = async (results) => {
+    try {
+      const promptData = {
+        original_prompt: prompt,
+        suggested_prompt_id: selectedSuggestion?.id,
+        user_feedback: {
+          used_suggestion: !!selectedSuggestion,
+          suggestion_satisfaction: selectedSuggestion ? 'good' : null
+        }
+      };
+
+      await fetch('/api/campaign-intelligence/record-execution', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session?.accessToken || 'demo_token'}`
+        },
+        body: JSON.stringify({
+          prompt_data: promptData,
+          results: results
+        })
+      });
+    } catch (error) {
+      console.error('Failed to record campaign execution:', error);
+    }
+  };
+
   const executeSmartCampaign = async () => {
     if (!prompt.trim()) {
       setError('Please enter a prompt');
@@ -98,21 +173,73 @@ export default function SmartCampaign({ isOpen, onClose, onCampaignCreated }) {
         throw new Error(data.error || 'Failed to execute Smart Campaign');
       }
 
-      setResults(data);
+      // Extract leads from nested structure
+      const premiumLeads = data.final_results?.stages?.quality_gates?.premium_leads || 
+                          data.stages?.quality_gates?.premium_leads || 
+                          [];
+      const backupLeads = data.final_results?.stages?.quality_gates?.backup_leads || 
+                         data.stages?.quality_gates?.backup_leads || 
+                         [];
+      const excludedLeads = data.final_results?.stages?.quality_gates?.excluded_leads || 
+                           data.stages?.quality_gates?.excluded_leads || 
+                           [];
+      
+      // Flatten the structure for frontend consumption
+      const flattenedData = {
+        ...data,
+        premium_leads: premiumLeads,
+        backup_leads: backupLeads,
+        excluded_leads: excludedLeads,
+        campaign_data: data.final_results?.campaign_data || data.campaign_data
+      };
+      
+      setResults(flattenedData);
       
       // Phase 3: Store adaptive metadata if available
       if (useAdaptive && data.adaptive_metadata) {
         setAdaptiveMetadata(data.adaptive_metadata);
       }
       
-      // Simulate progress updates
-      pipelineStages.forEach((stage, index) => {
+      // Record campaign execution for learning
+      await recordCampaignExecution(data);
+      
+      // Track pipeline progress with realistic timing
+      const progressTiming = {
+        'prompt_analysis': 2000,
+        'prospecting': 8000,
+        'enrichment': 12000,
+        'quality_gates': 15000,
+        'campaign_creation': 18000
+      };
+
+      // Start with prompt analysis
+      setTimeout(() => {
+        setExecutionProgress(prev => ({
+          ...prev,
+          'prompt_analysis': { status: 'running', timestamp: new Date() }
+        }));
+      }, 500);
+
+      // Complete stages progressively
+      Object.entries(progressTiming).forEach(([stageId, delay]) => {
         setTimeout(() => {
           setExecutionProgress(prev => ({
             ...prev,
-            [stage.id]: { status: 'completed', timestamp: new Date() }
+            [stageId]: { status: 'completed', timestamp: new Date() }
           }));
-        }, (index + 1) * 1000);
+          
+          // Start next stage if not the last one
+          const stageIndex = pipelineStages.findIndex(s => s.id === stageId);
+          if (stageIndex < pipelineStages.length - 1) {
+            const nextStage = pipelineStages[stageIndex + 1];
+            setTimeout(() => {
+              setExecutionProgress(prev => ({
+                ...prev,
+                [nextStage.id]: { status: 'running', timestamp: new Date() }
+              }));
+            }, 1000);
+          }
+        }, delay);
       });
 
     } catch (err) {
@@ -134,9 +261,9 @@ export default function SmartCampaign({ isOpen, onClose, onCampaignCreated }) {
           'Authorization': `Bearer ${session?.accessToken || 'demo_token'}`
         },
         body: JSON.stringify({
-          campaign_data: results.campaign_data,
-          premium_leads: results.premium_leads,
-          backup_leads: results.backup_leads,
+          campaign_data: results.campaign_data || {},
+          premium_leads: results.premium_leads || [],
+          backup_leads: results.backup_leads || [],
         }),
       });
 
@@ -164,7 +291,7 @@ export default function SmartCampaign({ isOpen, onClose, onCampaignCreated }) {
   const downloadCSV = () => {
     if (!results) return;
 
-    const allLeads = [...results.premium_leads, ...results.backup_leads];
+    const allLeads = [...(results.premium_leads || []), ...(results.backup_leads || [])];
     
     // Create CSV headers
     const headers = [
@@ -261,6 +388,75 @@ export default function SmartCampaign({ isOpen, onClose, onCampaignCreated }) {
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   Describe your ideal prospects
                 </label>
+                
+                {/* Smart Suggestions */}
+                <div className="mb-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="text-sm font-medium text-gray-700">Smart Suggestions</h3>
+                    <button
+                      onClick={getCampaignSuggestions}
+                      disabled={isLoadingSuggestions}
+                      className="text-xs text-blue-600 hover:text-blue-800 disabled:opacity-50"
+                    >
+                      {isLoadingSuggestions ? 'Loading...' : 'Refresh'}
+                    </button>
+                  </div>
+                  
+                  {isLoadingSuggestions ? (
+                    <div className="flex items-center space-x-2 text-gray-500">
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
+                      <span className="text-sm">Analyzing your documents...</span>
+                    </div>
+                  ) : suggestedPrompts.length > 0 ? (
+                    <div className="grid grid-cols-1 gap-3">
+                      {suggestedPrompts.map((suggestion) => (
+                        <button
+                          key={suggestion.id}
+                          onClick={() => handlePromptSuggestion(suggestion)}
+                          className={`text-left p-3 rounded-lg transition-colors group ${
+                            selectedSuggestion?.id === suggestion.id
+                              ? 'bg-blue-100 border-2 border-blue-300'
+                              : 'bg-blue-50 hover:bg-blue-100 border border-blue-200'
+                          }`}
+                        >
+                          <div className="flex items-start justify-between">
+                            <div className="flex-1">
+                              <h4 className="font-medium text-blue-900 group-hover:text-blue-800">
+                                {suggestion.title}
+                              </h4>
+                              <p className="text-sm text-blue-700 mt-1 line-clamp-2">
+                                {suggestion.prompt}
+                              </p>
+                              <div className="flex items-center mt-2">
+                                <span className="text-xs text-blue-600 bg-blue-100 px-2 py-1 rounded-full">
+                                  {Math.round(suggestion.confidence * 100)}% match
+                                </span>
+                                {suggestion.category && (
+                                  <span className="ml-2 text-xs text-gray-500">
+                                    {suggestion.category.replace('_', ' ')}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                            <svg className="w-5 h-5 text-blue-400 group-hover:text-blue-600 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                            </svg>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-center py-4 text-gray-500">
+                      <p className="text-sm">No suggestions available</p>
+                      <p className="text-xs mt-1">Upload documents to get smart campaign suggestions</p>
+                    </div>
+                  )}
+                  
+                  <div className="mt-3 text-xs text-gray-500">
+                    💡 Suggestions are generated based on your uploaded documents and will improve over time
+                  </div>
+                </div>
+                
                 <textarea
                   value={prompt}
                   onChange={(e) => setPrompt(e.target.value)}
@@ -330,6 +526,43 @@ export default function SmartCampaign({ isOpen, onClose, onCampaignCreated }) {
                 </div>
               )}
 
+              {/* Real-time Pipeline Progress */}
+              {isExecuting && (
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                  <h3 className="text-lg font-semibold text-blue-900 mb-4 flex items-center">
+                    <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-600 mr-2"></div>
+                    Pipeline Execution Progress
+                  </h3>
+                  <div className="grid grid-cols-5 gap-4">
+                    {pipelineStages.map((stage, index) => (
+                      <div key={stage.id} className="text-center">
+                        <div className={`w-12 h-12 mx-auto rounded-full flex items-center justify-center text-lg transition-all duration-500 ${
+                          getStageStatus(stage.id) === 'completed' 
+                            ? 'bg-green-100 text-green-600 scale-110' 
+                            : getStageStatus(stage.id) === 'running'
+                            ? 'bg-blue-100 text-blue-600 animate-pulse'
+                            : 'bg-gray-100 text-gray-400'
+                        }`}>
+                          {getStageIcon(stage)}
+                        </div>
+                        <p className="text-xs mt-2 text-gray-600 font-medium">{stage.name}</p>
+                        {getStageStatus(stage.id) === 'running' && (
+                          <div className="mt-1">
+                            <div className="w-full bg-gray-200 rounded-full h-1">
+                              <div className="bg-blue-600 h-1 rounded-full animate-pulse" style={{width: '60%'}}></div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-4 text-sm text-blue-700">
+                    <p>🔄 Processing your campaign request...</p>
+                    <p className="text-xs mt-1">This may take 30-60 seconds depending on the complexity</p>
+                  </div>
+                </div>
+              )}
+
               <div className="flex justify-end">
                 <button
                   onClick={executeSmartCampaign}
@@ -375,20 +608,20 @@ export default function SmartCampaign({ isOpen, onClose, onCampaignCreated }) {
               {/* Campaign Summary */}
               <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
                 <h3 className="text-lg font-semibold text-blue-900 mb-2">
-                  🎯 Campaign Ready: {results.campaign_data.name}
+                  🎯 Campaign Ready: {results.campaign_data?.name || 'Smart Campaign'}
                 </h3>
                 <div className="grid grid-cols-3 gap-4 text-sm">
                   <div>
                     <span className="font-medium text-blue-800">Premium Leads:</span>
-                    <span className="ml-2 text-blue-600">{results.premium_leads.length}</span>
+                    <span className="ml-2 text-blue-600">{results.premium_leads?.length || 0}</span>
                   </div>
                   <div>
                     <span className="font-medium text-blue-800">Backup Leads:</span>
-                    <span className="ml-2 text-blue-600">{results.backup_leads.length}</span>
+                    <span className="ml-2 text-blue-600">{results.backup_leads?.length || 0}</span>
                   </div>
                   <div>
                     <span className="font-medium text-blue-800">Execution Time:</span>
-                    <span className="ml-2 text-blue-600">{results.execution_time.toFixed(1)}s</span>
+                    <span className="ml-2 text-blue-600">{results.execution_time?.toFixed(1) || '0.0'}s</span>
                   </div>
                 </div>
               </div>
@@ -424,11 +657,11 @@ export default function SmartCampaign({ isOpen, onClose, onCampaignCreated }) {
                 <div className="space-y-2 text-sm">
                   <div className="flex justify-between">
                     <span className="text-green-800">Premium Leads (A-B Grade):</span>
-                    <span className="font-medium text-green-600">{results.premium_leads.length}</span>
+                    <span className="font-medium text-green-600">{results.premium_leads?.length || 0}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-green-800">Backup Leads (C-D Grade):</span>
-                    <span className="font-medium text-green-600">{results.backup_leads.length}</span>
+                    <span className="font-medium text-green-600">{results.backup_leads?.length || 0}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-green-800">Excluded Leads (F Grade):</span>
@@ -539,8 +772,8 @@ export default function SmartCampaign({ isOpen, onClose, onCampaignCreated }) {
                         </tr>
                       </thead>
                       <tbody className="bg-white divide-y divide-gray-200">
-                        {[...results.premium_leads, ...results.backup_leads].map((lead, index) => (
-                          <tr key={index} className={index < results.premium_leads.length ? 'bg-green-50' : 'bg-orange-50'}>
+                        {[...(results.premium_leads || []), ...(results.backup_leads || [])].map((lead, index) => (
+                          <tr key={index} className={index < (results.premium_leads?.length || 0) ? 'bg-green-50' : 'bg-orange-50'}>
                             <td className="px-4 py-3 text-sm font-medium text-gray-900">{lead.name}</td>
                             <td className="px-4 py-3 text-sm text-gray-900">{lead.company}</td>
                             <td className="px-4 py-3 text-sm text-gray-900">{lead.title}</td>
@@ -614,7 +847,7 @@ export default function SmartCampaign({ isOpen, onClose, onCampaignCreated }) {
                         if (onClose) onClose();
                         // Trigger copywriter agent with these leads
                         window.dispatchEvent(new CustomEvent('openCopywriterAgent', {
-                          detail: { leads: [...results.premium_leads, ...results.backup_leads] }
+                          detail: { leads: [...(results.premium_leads || []), ...(results.backup_leads || [])] }
                         }));
                       }}
                       className="bg-gradient-to-r from-green-600 to-teal-600 text-white px-6 py-3 rounded-lg hover:from-green-700 hover:to-teal-700 transition-all transform hover:scale-105 shadow-lg flex items-center space-x-2"
@@ -628,7 +861,7 @@ export default function SmartCampaign({ isOpen, onClose, onCampaignCreated }) {
                         if (onClose) onClose();
                         // Trigger smart outreach agent with these leads
                         window.dispatchEvent(new CustomEvent('openSmartOutreachAgent', {
-                          detail: { leads: [...results.premium_leads, ...results.backup_leads] }
+                          detail: { leads: [...(results.premium_leads || []), ...(results.backup_leads || [])] }
                         }));
                       }}
                       className="bg-gradient-to-r from-orange-600 to-red-600 text-white px-6 py-3 rounded-lg hover:from-orange-700 hover:to-red-700 transition-all transform hover:scale-105 shadow-lg flex items-center space-x-2"

@@ -2,10 +2,10 @@ import os
 import json
 import csv
 import io
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 from datetime import datetime
 import logging
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 from openai import OpenAI
 
 # Import our existing Google workflow components
@@ -22,12 +22,27 @@ logger = logging.getLogger(__name__)
 
 class ProspectorCriteria(BaseModel):
     """Criteria for lead prospecting"""
-    target_role: str
+    target_role: Union[str, List[str]]  # Support single or multiple roles
     industry: str
     company_size: str
     location: str
     count: int = 50
     additional_filters: Optional[Dict[str, Any]] = None
+    
+    @validator('target_role')
+    def normalize_target_role(cls, v):
+        """Ensure target_role is always a list internally for consistency"""
+        if isinstance(v, str):
+            return [v]
+        return v
+    
+    def get_role_string(self) -> str:
+        """Get formatted string of roles for display/prompts"""
+        if isinstance(self.target_role, list):
+            if len(self.target_role) == 1:
+                return self.target_role[0]
+            return " or ".join(self.target_role)
+        return self.target_role
 
 class ProspectorTool:
     """Tool for AI-powered lead prospecting based on natural language prompts"""
@@ -65,7 +80,7 @@ class ProspectorTool:
             {f"Company Context: {company_context}" if company_context else ""}
             
             Extract the following information:
-            - target_role: The job title/role (e.g., "CTO", "VP Engineering", "Founder")
+            - target_role: The job title/role - can be a single string OR array of strings if multiple roles mentioned (e.g., "CTO", ["CTO", "VP Engineering"], "Founder")
             - industry: The industry/sector (e.g., "SaaS", "Fintech", "Healthcare")
             - company_size: Company size range (e.g., "10-50", "50-200", "500+")
             - location: Geographic location (e.g., "San Francisco", "New York", "Remote")
@@ -73,9 +88,11 @@ class ProspectorTool:
             
             {f"Consider the company's target audience and industry when parsing the request." if company_context else ""}
             
+            IMPORTANT: If the user mentions multiple roles (e.g., "CTOs and VPs"), return target_role as an array.
+            
             Return as JSON format:
             {{
-                "target_role": "extracted_role",
+                "target_role": "extracted_role" OR ["role1", "role2"],
                 "industry": "extracted_industry", 
                 "company_size": "extracted_size",
                 "location": "extracted_location",
@@ -119,10 +136,13 @@ class ProspectorTool:
                 company_context = self.knowledge_service.get_company_context(tenant_id, user_id, task_type="prospecting")
                 target_audience = self.knowledge_service.get_target_audience(tenant_id, user_id, task_type="prospecting")
             
+            # Format roles for better prompt
+            role_display = criteria.get_role_string()
+            
             generation_prompt = f"""
             Generate {criteria.count} realistic B2B leads with the following criteria:
             
-            Target Role: {criteria.target_role}
+            Target Role: {role_display}
             Industry: {criteria.industry}
             Company Size: {criteria.company_size}
             Location: {criteria.location}
@@ -173,12 +193,13 @@ class ProspectorTool:
                     logger.warning(f"Skipping invalid lead data: {e}")
                     continue
             
-            logger.info(f"Generated {len(leads)} leads for criteria: {criteria.target_role} in {criteria.industry}")
+            role_display = criteria.get_role_string()
+            logger.info(f"Generated {len(leads)} leads for criteria: {role_display} in {criteria.industry}")
             return leads
             
         except Exception as e:
             logger.error(f"Error generating leads: {e}")
-            return []
+            raise e  # Re-raise to show actual error
     
     def create_csv(self, leads: List[LeadData], filename: str = None) -> Dict[str, Any]:
         """Create CSV file from leads data"""
@@ -242,7 +263,7 @@ class ProspectorTool:
                 "csv_filename": csv_result["filename"],
                 "csv_content": csv_result["csv_content"],
                 "lead_count": len(leads),
-                "message": f"Successfully generated {len(leads)} leads for {criteria.target_role} in {criteria.industry}"
+                "message": f"Successfully generated {len(leads)} leads for {criteria.get_role_string()} in {criteria.industry}"
             }
             
         except Exception as e:
@@ -340,11 +361,13 @@ class ProspectorTool:
             Market Context: {market_context}
             
             Extract the following information with high accuracy:
-            - target_role: The job title/role (e.g., "CTO", "VP Engineering", "Founder")
+            - target_role: The job title/role - can be a single string OR array of strings if multiple roles mentioned (e.g., "CTO", ["CTO", "VP Engineering"], "Founder")
             - industry: The industry/sector (e.g., "SaaS", "Fintech", "Healthcare")
             - company_size: Company size range (e.g., "10-50", "50-200", "500+")
             - location: Geographic location (e.g., "San Francisco", "New York", "Remote")
             - count: Number of leads requested (default 50)
+            
+            IMPORTANT: If multiple roles are mentioned (e.g., "CTOs and VPs"), return target_role as an array like ["CTO", "VP"].
             
             Consider the company's target audience, market conditions, and industry trends when parsing.
             
@@ -360,7 +383,9 @@ class ProspectorTool:
             
             # Use LLM selector for optimal model
             model_recommendation = self.llm_selector.recommend_model_for_task(
-                "prompt_parsing", len(prompt), {"quality_priority": True}
+                "prompt_parsing", len(prompt), 
+                {"quality_priority": True},
+                client_type="openai"
             )
             
             selected_model = model_recommendation["recommended_model"]
@@ -396,10 +421,12 @@ class ProspectorTool:
             market_intelligence = self._get_market_intelligence_for_generation(criteria)
             
             # Enhanced generation prompt
+            role_display = criteria.get_role_string()
+            
             generation_prompt = f"""
             Generate {criteria.count} realistic B2B leads with enhanced market intelligence:
             
-            Target Role: {criteria.target_role}
+            Target Role: {role_display}
             Industry: {criteria.industry}
             Company Size: {criteria.company_size}
             Location: {criteria.location}
@@ -428,12 +455,23 @@ class ProspectorTool:
             Return as JSON array of lead objects.
             """
             
-            # Use optimal model for generation
-            model_recommendation = self.llm_selector.recommend_model_for_task(
-                "lead_generation", len(generation_prompt), {"quality_priority": True}
-            )
+            # Use optimal model for generation with fallback
+            try:
+                model_recommendation = self.llm_selector.recommend_model_for_task(
+                    "lead_generation", len(generation_prompt), 
+                    {"quality_priority": True},
+                    client_type="openai"
+                )
+                selected_model = model_recommendation["recommended_model"]
+                logger.info(f"Using recommended model: {selected_model}")
+            except Exception as e:
+                logger.warning(f"Model selection failed, using fallback: {e}")
+                selected_model = "gpt-3.5-turbo"
             
-            selected_model = model_recommendation["recommended_model"]
+            # Check if OpenAI API key is available
+            if not os.getenv("OPENAI_API_KEY"):
+                logger.error("OpenAI API key not found, generating mock leads")
+                return self._generate_mock_leads(criteria)
             
             response = self.openai_client.chat.completions.create(
                 model=selected_model,
@@ -459,13 +497,13 @@ class ProspectorTool:
                     logger.warning(f"Skipping invalid lead data: {e}")
                     continue
             
-            logger.info(f"Generated {len(leads)} enhanced leads for criteria: {criteria.target_role} in {criteria.industry}")
+            role_display = criteria.get_role_string()
+            logger.info(f"Generated {len(leads)} enhanced leads for criteria: {role_display} in {criteria.industry}")
             return leads
             
         except Exception as e:
             logger.error(f"Error generating enhanced leads: {e}")
-            # Fallback to standard generation
-            return self.generate_leads(criteria, tenant_id, user_id)
+            raise e  # Re-raise to show actual error
     
     def enrich_leads_with_market_data(self, leads: List[LeadData], criteria: ProspectorCriteria) -> List[LeadData]:
         """Enrich leads with market intelligence data"""
@@ -618,7 +656,7 @@ class ProspectorTool:
                 "knowledge_level": "failed",
                 "strategy_used": "none"
             }
-
+    
 class ProspectorAgent:
     """AI Prospector Agent for lead mining and targeting with company knowledge"""
     

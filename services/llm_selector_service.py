@@ -45,6 +45,15 @@ class LLMSelectorService:
         self.model_configs = self._initialize_model_configs()
         self.usage_stats = {}  # Track usage for optimization
         
+        # Map models to their respective API clients
+        self.model_clients = {
+            "claude-haiku": "anthropic",
+            "claude-sonnet": "anthropic",
+            "gpt-3.5-turbo": "openai",
+            "gpt-4": "openai",
+            "grok": "grok"
+        }
+        
     def _initialize_model_configs(self) -> Dict[str, ModelConfig]:
         """Initialize model configurations with performance and cost data"""
         return {
@@ -239,8 +248,18 @@ class LLMSelectorService:
         
         # Select best model
         if not model_scores:
-            logger.warning("No models available, returning default model")
-            return "gpt-3.5-turbo", self.model_configs.get("gpt-3.5-turbo", self.model_configs["claude-haiku"])
+            logger.warning("No models available for client type, using fallback")
+            client_type = requirements.get("client_type", "openai")
+            fallback_models = {
+                "openai": "gpt-3.5-turbo",
+                "anthropic": "claude-haiku",
+                "grok": "grok"
+            }
+            fallback = fallback_models.get(client_type, "gpt-3.5-turbo")
+            if fallback in self.model_configs and self._is_model_available(fallback):
+                return fallback, self.model_configs[fallback]
+            else:
+                raise Exception(f"No models available for client type: {client_type}")
         
         best_model = max(model_scores.items(), key=lambda x: x[1])
         selected_model = best_model[0]
@@ -256,8 +275,13 @@ class LLMSelectorService:
     def _filter_models_by_requirements(self, requirements: Dict[str, Any]) -> Dict[str, ModelConfig]:
         """Filter available models based on requirements"""
         filtered_models = {}
+        client_type = requirements.get("client_type", "openai")
         
         for model_name, config in self.model_configs.items():
+            # Filter by client type compatibility
+            if self.model_clients.get(model_name) != client_type:
+                continue
+                
             # Check API key availability
             if not self._is_model_available(model_name):
                 continue
@@ -287,7 +311,7 @@ class LLMSelectorService:
         return filtered_models
     
     def _is_model_available(self, model_name: str) -> bool:
-        """Check if model API key is available"""
+        """Check if model API key is available and client supports it"""
         api_keys = {
             "claude-haiku": os.getenv("ANTHROPIC_API_KEY"),
             "claude-sonnet": os.getenv("ANTHROPIC_API_KEY"),
@@ -296,7 +320,29 @@ class LLMSelectorService:
             "grok": os.getenv("GROK_API_KEY")
         }
         
-        return bool(api_keys.get(model_name))
+        api_key = api_keys.get(model_name)
+        if not api_key:
+            logger.debug(f"Model {model_name} unavailable: API key not configured")
+            return False
+        
+        return True
+    
+    def get_available_models_for_client(self, client_type: str = "openai") -> List[str]:
+        """
+        Get list of models available for a specific client type.
+        
+        Args:
+            client_type: Type of client (openai, anthropic, grok)
+            
+        Returns:
+            List of available model names
+        """
+        available = []
+        for model_name, config in self.model_configs.items():
+            if self._is_model_available(model_name) and self.model_clients.get(model_name) == client_type:
+                available.append(model_name)
+        
+        return available
     
     def _calculate_model_score(self, config: ModelConfig, complexity: TaskComplexity, requirements: Dict[str, Any]) -> float:
         """Calculate suitability score for a model"""
@@ -394,7 +440,8 @@ class LLMSelectorService:
         return self.model_configs.get(model_name)
 
     def recommend_model_for_task(self, task_description: str, input_size: int = 0, 
-                                requirements: Dict[str, Any] = None) -> Dict[str, Any]:
+                                requirements: Dict[str, Any] = None,
+                                client_type: str = "openai") -> Dict[str, Any]:
         """
         Provide model recommendation with reasoning for a specific task.
         
@@ -402,14 +449,16 @@ class LLMSelectorService:
             task_description: Description of the task
             input_size: Size of input data
             requirements: Additional requirements
+            client_type: Type of client to use (openai, anthropic, grok)
             
         Returns:
             Dict with recommendation and reasoning
         """
-        logger.info(f"Providing model recommendation for: {task_description}")
+        logger.info(f"Providing model recommendation for: {task_description} (client: {client_type})")
         
         requirements = requirements or {}
         requirements["input_size"] = input_size
+        requirements["client_type"] = client_type  # Add to requirements
         
         # Assess complexity
         complexity = self.assess_task_complexity("custom_task", requirements)

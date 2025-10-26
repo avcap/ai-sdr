@@ -707,7 +707,8 @@ class CopywriterAgent:
         # Select optimal model for copywriting
         model_selection = self.llm_selector.recommend_model_for_task(
             "personalization", 
-            len(str(fused_knowledge)) + len(str(market_context))
+            len(str(fused_knowledge)) + len(str(market_context)),
+            client_type="openai"
         )
         
         selected_model = model_selection["recommended_model"]

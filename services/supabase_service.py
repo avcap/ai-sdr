@@ -508,4 +508,134 @@ class SupabaseService:
         except Exception as e:
             logger.error(f"Error getting table info: {e}")
             return {"table_name": table_name, "error": str(e)}
+    
+    # ==============================================
+    # CAMPAIGN INTELLIGENCE & LEARNING
+    # ==============================================
+    
+    def save_campaign_suggestion(self, tenant_id: str, user_id: str, suggestion_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Save campaign suggestion to database"""
+        try:
+            suggestion_record = {
+                "tenant_id": tenant_id,
+                "user_id": user_id,
+                "title": suggestion_data.get("title", ""),
+                "prompt_text": suggestion_data.get("prompt", ""),
+                "reasoning": suggestion_data.get("reasoning", ""),
+                "confidence_score": suggestion_data.get("confidence", 0.7),
+                "category": suggestion_data.get("category", "general"),
+                "source_documents": json.dumps(suggestion_data.get("source_documents", [])),
+                "usage_count": 0,
+                "success_rate": 0.0
+            }
+            
+            result = self.client.table("campaign_suggestions").insert(suggestion_record).execute()
+            suggestion = result.data[0] if result.data else None
+            
+            if suggestion:
+                logger.info(f"Saved campaign suggestion: {suggestion['id']}")
+                return suggestion
+            else:
+                raise Exception("Failed to save campaign suggestion")
+                
+        except Exception as e:
+            logger.error(f"Error saving campaign suggestion: {e}")
+            raise
+    
+    def get_campaign_suggestions(self, tenant_id: str, user_id: str, limit: int = 3) -> List[Dict[str, Any]]:
+        """Get campaign suggestions for user"""
+        try:
+            result = self.client.table("campaign_suggestions")\
+                .select("*")\
+                .eq("tenant_id", tenant_id)\
+                .eq("user_id", user_id)\
+                .order("confidence_score", desc=True)\
+                .limit(limit)\
+                .execute()
+            return result.data or []
+        except Exception as e:
+            logger.error(f"Error getting campaign suggestions: {e}")
+            return []
+    
+    def save_campaign_execution(self, execution_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Save campaign execution record"""
+        try:
+            result = self.client.table("campaign_executions").insert(execution_data).execute()
+            execution = result.data[0] if result.data else None
+            
+            if execution:
+                logger.info(f"Saved campaign execution: {execution['id']}")
+                return execution
+            else:
+                raise Exception("Failed to save campaign execution")
+                
+        except Exception as e:
+            logger.error(f"Error saving campaign execution: {e}")
+            raise
+    
+    def get_campaign_execution_history(self, tenant_id: str, user_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+        """Get campaign execution history for user"""
+        try:
+            result = self.client.table("campaign_executions")\
+                .select("*")\
+                .eq("tenant_id", tenant_id)\
+                .eq("user_id", user_id)\
+                .order("executed_at", desc=True)\
+                .limit(limit)\
+                .execute()
+            return result.data or []
+        except Exception as e:
+            logger.error(f"Error getting campaign execution history: {e}")
+            return []
+    
+    def update_suggestion_metrics(self, suggestion_id: str, metrics: Dict[str, Any]) -> bool:
+        """Update suggestion performance metrics"""
+        try:
+            result = self.client.table("campaign_suggestions")\
+                .update(metrics)\
+                .eq("id", suggestion_id)\
+                .execute()
+            return len(result.data) > 0
+        except Exception as e:
+            logger.error(f"Error updating suggestion metrics: {e}")
+            return False
+    
+    def save_prompt_pattern(self, pattern_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Save successful prompt pattern"""
+        try:
+            result = self.client.table("prompt_patterns").insert(pattern_data).execute()
+            pattern = result.data[0] if result.data else None
+            
+            if pattern:
+                logger.info(f"Saved prompt pattern: {pattern['id']}")
+                return pattern
+            else:
+                raise Exception("Failed to save prompt pattern")
+                
+        except Exception as e:
+            logger.error(f"Error saving prompt pattern: {e}")
+            raise
+    
+    def get_successful_patterns(self, tenant_id: str, filters: Dict[str, Any] = None) -> List[Dict[str, Any]]:
+        """Get successful prompt patterns"""
+        try:
+            query = self.client.table("prompt_patterns")\
+                .select("*")\
+                .eq("tenant_id", tenant_id)\
+                .order("success_count", desc=True)
+            
+            # Apply filters if provided
+            if filters:
+                if filters.get("pattern_type"):
+                    query = query.eq("pattern_type", filters["pattern_type"])
+                if filters.get("industry"):
+                    query = query.eq("industry", filters["industry"])
+                if filters.get("target_role"):
+                    query = query.eq("target_role", filters["target_role"])
+            
+            result = query.limit(20).execute()
+            return result.data or []
+        except Exception as e:
+            logger.error(f"Error getting successful patterns: {e}")
+            return []
 
