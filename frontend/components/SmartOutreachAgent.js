@@ -62,6 +62,7 @@ export default function SmartOutreachAgent({ isOpen, onClose, leads = [], campai
         },
         body: JSON.stringify({
           outreach_plan: outreachPlan,
+          campaign_id: campaignContext?.campaign_id || null,
           user_preferences: {
             send_immediately: true,
             max_daily_emails: 50,

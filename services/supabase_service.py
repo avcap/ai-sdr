@@ -674,4 +674,71 @@ class SupabaseService:
         except Exception as e:
             logger.error(f"Error getting successful patterns: {e}")
             return []
+    
+    # ==============================================
+    # GOOGLE OAUTH MANAGEMENT
+    # ==============================================
+    
+    def save_google_tokens(self, tenant_id: str, user_id: str, tokens: Dict[str, Any]) -> bool:
+        """Save or update Google OAuth tokens for a user"""
+        try:
+            token_data = {
+                "tenant_id": tenant_id,
+                "user_id": user_id,
+                "access_token": tokens["access_token"],
+                "refresh_token": tokens.get("refresh_token"),
+                "expires_at": tokens.get("expires_at"),
+                "scopes": tokens.get("scopes", []),
+                "email": tokens.get("email"),
+                "updated_at": datetime.utcnow().isoformat()
+            }
+            
+            # Upsert (insert or update)
+            result = self.client.table("google_auth").upsert(
+                token_data,
+                on_conflict="tenant_id,user_id"
+            ).execute()
+            
+            logger.info(f"Saved Google tokens for user {user_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error saving Google tokens: {e}")
+            return False
+    
+    def get_google_tokens(self, tenant_id: str, user_id: str) -> Optional[Dict[str, Any]]:
+        """Get Google OAuth tokens for a user"""
+        try:
+            result = self.client.table("google_auth").select("*").eq(
+                "tenant_id", tenant_id
+            ).eq("user_id", user_id).execute()
+            
+            if result.data:
+                token_data = result.data[0]
+                return {
+                    "access_token": token_data.get("access_token"),
+                    "refresh_token": token_data.get("refresh_token"),
+                    "expires_at": token_data.get("expires_at"),
+                    "scopes": token_data.get("scopes", []),
+                    "email": token_data.get("email")
+                }
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error getting Google tokens: {e}")
+            return None
+    
+    def delete_google_tokens(self, tenant_id: str, user_id: str) -> bool:
+        """Delete Google OAuth tokens for a user (disconnect)"""
+        try:
+            self.client.table("google_auth").delete().eq(
+                "tenant_id", tenant_id
+            ).eq("user_id", user_id).execute()
+            
+            logger.info(f"Deleted Google tokens for user {user_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error deleting Google tokens: {e}")
+            return False
 

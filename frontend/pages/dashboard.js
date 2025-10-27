@@ -30,6 +30,9 @@ export default function Dashboard() {
   const [selectedCampaign, setSelectedCampaign] = useState(null);
   const [uploadFile, setUploadFile] = useState(null);
   const [showTrainYourTeam, setShowTrainYourTeam] = useState(false);
+  const [showQuickOutreach, setShowQuickOutreach] = useState(false);
+  const [quickOutreachFile, setQuickOutreachFile] = useState(null);
+  const [quickOutreachLoading, setQuickOutreachLoading] = useState(false);
 
   useEffect(() => {
     if (status === 'loading') return;
@@ -260,6 +263,82 @@ export default function Dashboard() {
     }
   };
 
+  const handleQuickOutreach = async () => {
+    if (!quickOutreachFile) {
+      setError('Please select a CSV file first');
+      return;
+    }
+
+    setQuickOutreachLoading(true);
+    setError(null);
+
+    try {
+      // Parse CSV file
+      const text = await quickOutreachFile.text();
+      const lines = text.split('\n').filter(line => line.trim());
+      
+      if (lines.length < 2) {
+        throw new Error('CSV file must have headers and at least one data row');
+      }
+
+      // Parse headers (normalize to lowercase)
+      const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+      
+      // Parse rows into lead objects
+      const leads = [];
+      for (let i = 1; i < lines.length; i++) {
+        const values = lines[i].split(',').map(v => v.trim());
+        const lead = {};
+        
+        headers.forEach((header, index) => {
+          // Map common header variations
+          if (header.includes('name') || header.includes('full name')) {
+            lead['name'] = values[index] || '';
+          } else if (header.includes('company')) {
+            lead['company'] = values[index] || '';
+          } else if (header.includes('title') || header.includes('job')) {
+            lead['title'] = values[index] || '';
+          } else if (header.includes('email')) {
+            lead['email'] = values[index] || '';
+          } else if (header.includes('linkedin')) {
+            lead['linkedin_url'] = values[index] || '';
+          } else if (header.includes('phone')) {
+            lead['phone'] = values[index] || '';
+          } else if (header.includes('industry')) {
+            lead['industry'] = values[index] || '';
+          } else if (header.includes('size') || header.includes('company size')) {
+            lead['company_size'] = values[index] || '';
+          } else if (header.includes('location')) {
+            lead['location'] = values[index] || '';
+          }
+        });
+        
+        // Only add if we have at least name and company
+        if (lead.name && lead.company) {
+          leads.push(lead);
+        }
+      }
+
+      if (leads.length === 0) {
+        throw new Error('No valid leads found in CSV. Please ensure CSV has Name and Company columns.');
+      }
+
+      console.log(`📊 Parsed ${leads.length} leads from CSV:`, leads);
+
+      // Open Smart Outreach Agent with parsed leads
+      setSmartOutreachLeads(leads);
+      setShowSmartOutreachAgent(true);
+      setShowQuickOutreach(false);
+      setQuickOutreachFile(null);
+
+    } catch (err) {
+      setError(err.message || 'Failed to process CSV file');
+      console.error('Quick outreach error:', err);
+    } finally {
+      setQuickOutreachLoading(false);
+    }
+  };
+
   // const handleSheetsImportComplete = (result) => { // REMOVED
   //   alert(`Successfully imported ${result.leads_added || result.leads_created} leads from Google Sheets`);
   //   setShowSheetsImport(false);
@@ -339,6 +418,13 @@ export default function Dashboard() {
                           ✍️ Manual Copywriter
                         </button>
                 <button
+                  onClick={() => setShowQuickOutreach(true)}
+                  className="bg-gradient-to-r from-pink-600 to-rose-600 text-white px-6 py-2 rounded-lg hover:from-pink-700 hover:to-rose-700 transition-all transform hover:scale-105 shadow-lg flex items-center space-x-2"
+                >
+                  <span>⚡</span>
+                  <span>Quick Outreach</span>
+                </button>
+                <button
                   onClick={() => setShowTrainYourTeam(true)}
                   className="bg-gradient-to-r from-indigo-600 to-purple-600 text-white px-6 py-2 rounded-lg hover:from-indigo-700 hover:to-purple-700 transition-all transform hover:scale-105 shadow-lg flex items-center space-x-2"
                 >
@@ -384,10 +470,8 @@ export default function Dashboard() {
                 <div className="space-y-4">
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="text-sm text-gray-600">Connected Accounts:</p>
-                      {googleStatus.accounts.map((account, index) => (
-                        <p key={index} className="text-sm font-medium text-gray-900">{account.google_email}</p>
-                      ))}
+                      <p className="text-sm text-gray-600">Connected Account:</p>
+                      <p className="text-sm font-medium text-gray-900">{googleStatus.email || 'Connected'}</p>
                     </div>
                     <div className="flex space-x-2">
                       <button
@@ -621,6 +705,141 @@ export default function Dashboard() {
                     isOpen={showTrainYourTeam}
                     onClose={() => setShowTrainYourTeam(false)}
                   />
+                )}
+
+                {/* Quick Outreach Modal */}
+                {showQuickOutreach && (
+                  <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                    <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4">
+                      <div className="flex items-center justify-between p-6 border-b">
+                        <div className="flex items-center space-x-3">
+                          <div className="w-10 h-10 bg-gradient-to-r from-pink-500 to-rose-500 rounded-lg flex items-center justify-center">
+                            <span className="text-white text-xl">⚡</span>
+                          </div>
+                          <div>
+                            <h2 className="text-xl font-bold text-gray-900">Quick Outreach Test</h2>
+                            <p className="text-sm text-gray-600">Upload CSV and execute outreach instantly</p>
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => {
+                            setShowQuickOutreach(false);
+                            setQuickOutreachFile(null);
+                            setError(null);
+                          }}
+                          className="text-gray-400 hover:text-gray-600 transition-colors"
+                        >
+                          <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
+                      
+                      <div className="p-6 space-y-6">
+                        {/* Instructions */}
+                        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                          <h3 className="font-semibold text-blue-900 mb-2">📋 How it works:</h3>
+                          <ol className="text-sm text-blue-800 space-y-1 list-decimal list-inside">
+                            <li>Upload a CSV file with your leads (Name, Company, Email, Title, etc.)</li>
+                            <li>Click "Launch Outreach" to parse and preview leads</li>
+                            <li>Smart Outreach Agent will analyze and create an optimized plan</li>
+                            <li>Review the plan and click "Execute" to send real emails via Gmail</li>
+                          </ol>
+                        </div>
+
+                        {/* CSV Format Guide */}
+                        <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                          <h3 className="font-semibold text-gray-900 mb-2">Required CSV Columns:</h3>
+                          <div className="text-sm text-gray-700 space-y-1">
+                            <p><span className="font-medium">Required:</span> Name, Company</p>
+                            <p><span className="font-medium">Optional:</span> Email, Title, LinkedIn URL, Phone, Industry, Company Size, Location</p>
+                          </div>
+                          <div className="mt-3 text-xs text-gray-600 font-mono bg-white p-2 rounded border border-gray-300">
+                            Name,Company,Email,Title,Industry<br/>
+                            John Doe,TechCorp,john@techcorp.com,CTO,Technology<br/>
+                            Jane Smith,StartupCo,jane@startup.co,VP Sales,SaaS
+                          </div>
+                        </div>
+
+                        {/* File Upload */}
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">
+                            Upload CSV File
+                          </label>
+                          <div className="flex items-center space-x-3">
+                            <label className="flex-1 cursor-pointer">
+                              <div className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
+                                quickOutreachFile ? 'border-green-400 bg-green-50' : 'border-gray-300 hover:border-gray-400'
+                              }`}>
+                                {quickOutreachFile ? (
+                                  <div className="space-y-2">
+                                    <svg className="w-12 h-12 text-green-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                    <p className="text-sm font-medium text-gray-900">{quickOutreachFile.name}</p>
+                                    <p className="text-xs text-gray-500">{(quickOutreachFile.size / 1024).toFixed(2)} KB</p>
+                                  </div>
+                                ) : (
+                                  <div className="space-y-2">
+                                    <svg className="w-12 h-12 text-gray-400 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                                    </svg>
+                                    <p className="text-sm text-gray-600">Click to select CSV file</p>
+                                    <p className="text-xs text-gray-500">or drag and drop</p>
+                                  </div>
+                                )}
+                              </div>
+                              <input
+                                type="file"
+                                accept=".csv"
+                                onChange={(e) => setQuickOutreachFile(e.target.files[0])}
+                                className="hidden"
+                              />
+                            </label>
+                            {quickOutreachFile && (
+                              <button
+                                onClick={() => setQuickOutreachFile(null)}
+                                className="px-4 py-2 text-sm text-red-600 hover:text-red-800"
+                              >
+                                Clear
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Action Buttons */}
+                        <div className="flex space-x-3">
+                          <button
+                            onClick={handleQuickOutreach}
+                            disabled={!quickOutreachFile || quickOutreachLoading}
+                            className="flex-1 bg-gradient-to-r from-pink-600 to-rose-600 text-white px-6 py-3 rounded-lg hover:from-pink-700 hover:to-rose-700 transition-all transform hover:scale-105 shadow-lg disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
+                          >
+                            {quickOutreachLoading ? (
+                              <div className="flex items-center justify-center space-x-2">
+                                <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
+                                <span>Processing...</span>
+                              </div>
+                            ) : (
+                              <div className="flex items-center justify-center space-x-2">
+                                <span>⚡</span>
+                                <span>Launch Outreach</span>
+                              </div>
+                            )}
+                          </button>
+                          <button
+                            onClick={() => {
+                              setShowQuickOutreach(false);
+                              setQuickOutreachFile(null);
+                              setError(null);
+                            }}
+                            className="px-6 py-3 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                 )}
       </div>
     </>

@@ -135,14 +135,114 @@ async def health_check():
 async def get_google_auth_status(current_user: dict = Depends(get_current_user)):
     """Get Google authentication status"""
     try:
-        # For demo purposes, return not connected
-        return {
-            "connected": False,
-            "email": None,
-            "status": "not_connected"
-        }
+        # Check if user has Google tokens in database
+        google_tokens = supabase_service.get_google_tokens(
+            current_user["tenant_id"],
+            current_user["user_id"]
+        )
+        
+        if google_tokens and google_tokens.get("access_token"):
+            return {
+                "connected": True,
+                "email": google_tokens.get("email"),
+                "status": "connected"
+            }
+        else:
+            return {
+                "connected": False,
+                "email": None,
+                "status": "not_connected"
+            }
     except Exception as e:
         logger.error(f"Google auth status error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/auth/google/url")
+async def get_google_auth_url(
+    current_user: dict = Depends(get_current_user)
+):
+    """Get Google OAuth authorization URL"""
+    try:
+        google_oauth = GoogleOAuthService()
+        state = f"user_{current_user['user_id']}"
+        auth_url = google_oauth.get_authorization_url(state)
+        
+        return {
+            "auth_url": auth_url,
+            "state": state
+        }
+    except Exception as e:
+        logger.error(f"Failed to get Google auth URL: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+class GoogleCallbackRequest(BaseModel):
+    code: str
+    state: Optional[str] = None
+
+@app.post("/auth/google/callback")
+async def handle_google_callback(
+    request: GoogleCallbackRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """Handle Google OAuth callback"""
+    try:
+        code = request.code
+        
+        if not code:
+            raise HTTPException(status_code=400, detail="Missing authorization code")
+        
+        google_oauth = GoogleOAuthService()
+        tokens = google_oauth.exchange_code_for_tokens(code)
+        
+        # Get user's Google email
+        gmail_service = google_oauth.get_gmail_service(tokens["access_token"])
+        profile = gmail_service.users().getProfile(userId='me').execute()
+        google_email = profile['emailAddress']
+        
+        # Save tokens to google_auth table
+        supabase_service.save_google_tokens(
+            tenant_id=current_user["tenant_id"],
+            user_id=current_user["user_id"],
+            tokens={
+                "access_token": tokens["access_token"],
+                "refresh_token": tokens.get("refresh_token"),
+                "expires_at": tokens.get("expires_at"),
+                "scopes": tokens.get("scopes", []),
+                "email": google_email
+            }
+        )
+        
+        logger.info(f"✅ Google account connected for user {current_user['user_id']}: {google_email}")
+        
+        return {
+            "success": True,
+            "message": "Google account connected successfully",
+            "google_email": google_email
+        }
+        
+    except Exception as e:
+        logger.error(f"Google OAuth callback error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/auth/google/disconnect")
+async def disconnect_google(
+    current_user: dict = Depends(get_current_user)
+):
+    """Disconnect Google account"""
+    try:
+        supabase_service.delete_google_tokens(
+            current_user["tenant_id"],
+            current_user["user_id"]
+        )
+        
+        logger.info(f"✅ Google account disconnected for user {current_user['user_id']}")
+        
+        return {
+            "success": True,
+            "message": "Google account disconnected"
+        }
+    except Exception as e:
+        logger.error(f"Failed to disconnect Google: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # Campaign endpoints
@@ -952,6 +1052,186 @@ async def create_smart_outreach_plan(
             
     except Exception as e:
         logger.error(f"Smart Outreach agent error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/smart-outreach/execute")
+async def execute_smart_outreach(
+    request: dict,
+    current_user: dict = Depends(get_current_user)
+):
+    """Execute smart outreach campaign - send actual emails via Gmail API"""
+    try:
+        outreach_plan = request.get("outreach_plan", {})
+        campaign_id = request.get("campaign_id")
+        
+        if not outreach_plan:
+            raise HTTPException(status_code=400, detail="Outreach plan is required")
+        
+        logger.info(f"🚀 Executing smart outreach for campaign {campaign_id}")
+        
+        # Get user's Google OAuth tokens from Supabase
+        google_tokens = supabase_service.get_google_tokens(
+            current_user["tenant_id"],
+            current_user["user_id"]
+        )
+        
+        if not google_tokens or not google_tokens.get("access_token"):
+            raise HTTPException(
+                status_code=401,
+                detail="Google account not connected. Please connect your Google account first."
+            )
+        
+        # Initialize Google OAuth service
+        google_service = GoogleOAuthService()
+        
+        # Check if token needs refresh
+        access_token = google_tokens["access_token"]
+        expires_at = google_tokens.get("expires_at")
+        if expires_at:
+            from dateutil import parser
+            from datetime import timezone
+            expiry = parser.parse(expires_at)
+            now = datetime.now(timezone.utc)
+            # Make expiry timezone-aware if it's not
+            if expiry.tzinfo is None:
+                expiry = expiry.replace(tzinfo=timezone.utc)
+            if expiry <= now:
+                # Token expired, refresh it
+                logger.info("Access token expired, refreshing...")
+                refresh_result = google_service.refresh_access_token(google_tokens["refresh_token"])
+                access_token = refresh_result["access_token"]
+                
+                # Update tokens in database
+                supabase_service.save_google_tokens(
+                    current_user["tenant_id"],
+                    current_user["user_id"],
+                    refresh_result
+                )
+        
+        # Import the smart outreach agent
+        from agents.smart_outreach_agent import SmartOutreachAgent
+        
+        # Execute outreach with real email sending
+        agent = SmartOutreachAgent()
+        execution_results = {
+            "messages_sent": 0,
+            "channels_used": {},
+            "errors": [],
+            "lead_updates": []
+        }
+        
+        schedule = outreach_plan.get("schedule", [])
+        
+        for scheduled_outreach in schedule:
+            try:
+                lead = scheduled_outreach["lead"]
+                channel = scheduled_outreach["channel"]
+                
+                # Generate personalized message
+                message_result = agent._generate_smart_message(
+                    lead,
+                    channel,
+                    scheduled_outreach["analysis"]
+                )
+                
+                if not message_result["success"]:
+                    execution_results["errors"].append({
+                        "lead": lead.get("name"),
+                        "error": message_result.get("error")
+                    })
+                    continue
+                
+                message = message_result["message"]
+                
+                # Send via appropriate channel
+                send_result = None
+                if channel == "email" and lead.get("email"):
+                    # Send via Gmail API
+                    send_result = google_service.send_email_via_gmail(
+                        access_token=access_token,
+                        to_email=lead["email"],
+                        subject=message.get("subject", ""),
+                        body=message.get("body", "")
+                    )
+                elif channel == "linkedin":
+                    # LinkedIn sending not implemented yet
+                    send_result = {
+                        "success": False,
+                        "error": "LinkedIn integration coming soon"
+                    }
+                elif channel == "phone":
+                    # Phone calling not implemented yet
+                    send_result = {
+                        "success": False,
+                        "error": "Phone integration coming soon"
+                    }
+                
+                if send_result and send_result["success"]:
+                    execution_results["messages_sent"] += 1
+                    if channel not in execution_results["channels_used"]:
+                        execution_results["channels_used"][channel] = 0
+                    execution_results["channels_used"][channel] += 1
+                    
+                    # Update lead status in database
+                    if campaign_id:
+                        lead_update_result = supabase_service.client.table("leads").update({
+                            "status": "contacted",
+                            "data": {
+                                **lead.get("data", {}),
+                                "last_contact": datetime.now().isoformat(),
+                                "last_contact_channel": channel,
+                                "message_id": send_result.get("message_id")
+                            },
+                            "updated_at": datetime.now().isoformat()
+                        }).eq("campaign_id", campaign_id).eq("email", lead.get("email")).execute()
+                        
+                        execution_results["lead_updates"].append({
+                            "lead": lead.get("name"),
+                            "status": "contacted",
+                            "channel": channel
+                        })
+                else:
+                    error_msg = send_result.get("error") if send_result else "Unknown error"
+                    execution_results["errors"].append({
+                        "lead": lead.get("name"),
+                        "channel": channel,
+                        "error": error_msg
+                    })
+                    
+            except Exception as e:
+                logger.error(f"Error processing lead {scheduled_outreach.get('lead', {}).get('name')}: {e}")
+                execution_results["errors"].append({
+                    "lead": scheduled_outreach.get("lead", {}).get("name"),
+                    "error": str(e)
+                })
+        
+        # Update campaign results
+        if campaign_id:
+            try:
+                supabase_service.client.table("campaigns").update({
+                    "results": {
+                        "outreach_executed": True,
+                        "messages_sent": execution_results["messages_sent"],
+                        "channels_used": execution_results["channels_used"],
+                        "execution_date": datetime.now().isoformat(),
+                        "errors_count": len(execution_results["errors"])
+                    },
+                    "updated_at": datetime.now().isoformat()
+                }).eq("id", campaign_id).execute()
+            except Exception as e:
+                logger.error(f"Failed to update campaign results: {e}")
+        
+        return {
+            "success": True,
+            "message": f"Successfully sent {execution_results['messages_sent']} messages",
+            "execution_results": execution_results,
+            "completed_at": datetime.now().isoformat()
+        }
+            
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        logger.error(f"Smart Outreach execution error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # ==============================================
