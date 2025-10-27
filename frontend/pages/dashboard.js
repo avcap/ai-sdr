@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useSession, signOut } from 'next-auth/react';
 import { useRouter } from 'next/router';
+import Link from 'next/link';
 import Head from 'next/head';
 // import GoogleSheetsImport from '../components/GoogleSheetsImport'; // REMOVED
 import ProspectorAgent from '../components/ProspectorAgent';
@@ -411,6 +412,12 @@ export default function Dashboard() {
                         >
                           🚀 Smart Campaign
                         </button>
+                        <Link href="/campaigns">
+                          <button className="bg-gradient-to-r from-blue-600 to-cyan-600 text-white px-6 py-2 rounded-lg hover:from-blue-700 hover:to-cyan-700 transition-all transform hover:scale-105 shadow-lg flex items-center space-x-2">
+                            <span>📊</span>
+                            <span>View All Campaigns</span>
+                          </button>
+                        </Link>
                         <button
                           onClick={() => setShowCopywriterAgent(true)}
                           className="bg-gradient-to-r from-green-600 to-teal-600 text-white px-6 py-2 rounded-lg hover:from-green-700 hover:to-teal-700 transition-all transform hover:scale-105 shadow-lg"

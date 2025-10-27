@@ -1,690 +1,582 @@
 import { useState, useEffect } from 'react'
-import { useSession } from 'next-auth/react'
 import { useRouter } from 'next/router'
-import axios from 'axios'
-import toast from 'react-hot-toast'
-import GoogleSheetsImport from '../../components/GoogleSheetsImport'
-import {
-  DocumentArrowUpIcon,
-  EyeIcon,
-  PencilIcon,
-  TrashIcon,
-  PlusIcon,
-  CheckIcon,
-  XMarkIcon,
-  TableCellsIcon
-} from '@heroicons/react/24/outline'
+import Link from 'next/link'
+import LeadDetailModal from '../../components/LeadDetailModal'
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-
-export default function CampaignDetail() {
-  const { data: session } = useSession()
+export default function CampaignDetailPage() {
   const router = useRouter()
   const { campaignId } = router.query
-  
+
   const [campaign, setCampaign] = useState(null)
   const [leads, setLeads] = useState([])
-  const [outreachLogs, setOutreachLogs] = useState([])
+  const [stats, setStats] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [showUploadModal, setShowUploadModal] = useState(false)
-  const [showLeadModal, setShowLeadModal] = useState(false)
-  const [showSheetsImport, setShowSheetsImport] = useState(false)
-  const [editingLead, setEditingLead] = useState(null)
+  const [selectedLead, setSelectedLead] = useState(null)
+  const [activeTab, setActiveTab] = useState('leads')
+  const [searchTerm, setSearchTerm] = useState('')
+  const [filterStatus, setFilterStatus] = useState('all')
+  const [selectedLeads, setSelectedLeads] = useState([])
+  const [currentPage, setCurrentPage] = useState(1)
+  const [showBulkActions, setShowBulkActions] = useState(false)
+  const [editingName, setEditingName] = useState(false)
+  const [newName, setNewName] = useState('')
+
+  const leadsPerPage = 50
 
   useEffect(() => {
     if (campaignId) {
-      fetchCampaignData()
+      fetchCampaign()
+      fetchLeads()
+      fetchStats()
     }
-  }, [campaignId])
+  }, [campaignId, filterStatus, searchTerm, currentPage])
 
-  const fetchCampaignData = async () => {
+  const fetchCampaign = async () => {
     try {
-      const [campaignRes, leadsRes, logsRes] = await Promise.all([
-        axios.get(`${API_BASE_URL}/campaigns/${campaignId}`, {
-          headers: { Authorization: `Bearer ${session?.accessToken || 'demo_token'}` }
-        }),
-        axios.get(`${API_BASE_URL}/campaigns/${campaignId}/leads`, {
-          headers: { Authorization: `Bearer ${session?.accessToken || 'demo_token'}` }
-        }),
-        axios.get(`${API_BASE_URL}/campaigns/${campaignId}/outreach-logs`, {
-          headers: { Authorization: `Bearer ${session?.accessToken || 'demo_token'}` }
-        })
-      ])
-
-      setCampaign(campaignRes.data)
-      setLeads(leadsRes.data)
-      setOutreachLogs(logsRes.data)
+      const response = await fetch(`http://localhost:8000/campaigns/${campaignId}`, {
+        headers: { 'Authorization': 'Bearer demo_token' }
+      })
+      const data = await response.json()
+      setCampaign(data)
+      setNewName(data.name)
     } catch (error) {
-      console.error('Error fetching campaign data:', error)
-      toast.error('Failed to fetch campaign data')
+      console.error('Error fetching campaign:', error)
+    }
+  }
+
+  const fetchLeads = async () => {
+    try {
+      setLoading(true)
+      const params = new URLSearchParams({
+        page: currentPage,
+        limit: leadsPerPage,
+        ...(filterStatus !== 'all' && { status: filterStatus }),
+        ...(searchTerm && { search: searchTerm })
+      })
+      
+      const response = await fetch(
+        `http://localhost:8000/campaigns/${campaignId}/leads?${params}`,
+        { headers: { 'Authorization': 'Bearer demo_token' } }
+      )
+      const data = await response.json()
+      setLeads(data)
+    } catch (error) {
+      console.error('Error fetching leads:', error)
     } finally {
       setLoading(false)
     }
   }
 
-  const handleSheetsImportComplete = (result) => {
-    toast.success(`Successfully imported ${result.leads_added || result.leads_created} leads from Google Sheets`)
-    setShowSheetsImport(false)
-    fetchCampaignData() // Refresh data
-  }
-
-  const handleFileUpload = async (file) => {
+  const fetchStats = async () => {
     try {
-      const formData = new FormData()
-      formData.append('file', file)
-
-      const response = await axios.post(
-        `${API_BASE_URL}/campaigns/${campaignId}/leads/upload`,
-        formData,
-        {
-          headers: {
-            Authorization: `Bearer ${session?.accessToken || 'demo_token'}`,
-            'Content-Type': 'multipart/form-data'
-          }
-        }
-      );
-
-      toast.success(`Successfully uploaded ${response.data.leads_created} leads`);
-      setShowUploadModal(false);
-      fetchCampaignData(); // Refresh data
-    } catch (error) {
-      console.error('Error uploading leads:', error);
-      toast.error('Failed to upload leads file');
-    }
-  }
-
-  const handleCreateLead = async (leadData) => {
-    try {
-      await axios.post(`${API_BASE_URL}/campaigns/${campaignId}/leads`, leadData, {
-        headers: { Authorization: `Bearer ${session?.accessToken || 'demo_token'}` }
+      const response = await fetch(`http://localhost:8000/campaigns/${campaignId}/stats`, {
+        headers: { 'Authorization': 'Bearer demo_token' }
       })
-      
-      toast.success('Lead created successfully')
-      setShowLeadModal(false)
-      fetchCampaignData()
+      const data = await response.json()
+      setStats(data)
     } catch (error) {
-      console.error('Error creating lead:', error)
-      toast.error('Failed to create lead')
+      console.error('Error fetching stats:', error)
     }
   }
 
-  const handleUpdateLead = async (leadId, leadData) => {
+  const updateCampaign = async (updates) => {
     try {
-      await axios.put(`${API_BASE_URL}/leads/${leadId}`, leadData, {
-        headers: { Authorization: `Bearer ${session?.accessToken || 'demo_token'}` }
+      const response = await fetch(`http://localhost:8000/campaigns/${campaignId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer demo_token'
+        },
+        body: JSON.stringify(updates)
       })
-      
-      toast.success('Lead updated successfully')
-      setEditingLead(null)
-      fetchCampaignData()
+      const data = await response.json()
+      setCampaign(data)
+      setEditingName(false)
+      return true
     } catch (error) {
-      console.error('Error updating lead:', error)
-      toast.error('Failed to update lead')
+      console.error('Error updating campaign:', error)
+      return false
     }
   }
 
-  const handleDeleteLead = async (leadId) => {
+  const deleteLead = async (leadId) => {
     if (!confirm('Are you sure you want to delete this lead?')) return
-
+    
     try {
-      await axios.delete(`${API_BASE_URL}/leads/${leadId}`, {
-        headers: { Authorization: `Bearer ${session?.accessToken || 'demo_token'}` }
+      const response = await fetch(`http://localhost:8000/leads/${leadId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': 'Bearer demo_token' }
       })
       
-      toast.success('Lead deleted successfully')
-      fetchCampaignData()
+      if (response.ok) {
+        setLeads(leads.filter(l => l.id !== leadId))
+        fetchStats() // Refresh stats
+      }
     } catch (error) {
       console.error('Error deleting lead:', error)
-      toast.error('Failed to delete lead')
     }
   }
 
-  if (loading) {
+  const bulkUpdateLeads = async (updates) => {
+    if (selectedLeads.length === 0) return
+    
+    try {
+      const response = await fetch(`http://localhost:8000/campaigns/${campaignId}/leads/bulk-update`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer demo_token'
+        },
+        body: JSON.stringify({
+          lead_ids: selectedLeads,
+          updates
+        })
+      })
+      
+      if (response.ok) {
+        fetchLeads()
+        fetchStats()
+        setSelectedLeads([])
+        setShowBulkActions(false)
+      }
+    } catch (error) {
+      console.error('Error bulk updating leads:', error)
+    }
+  }
+
+  const toggleSelectAll = () => {
+    if (selectedLeads.length === leads.length) {
+      setSelectedLeads([])
+    } else {
+      setSelectedLeads(leads.map(l => l.id))
+    }
+  }
+
+  const toggleSelectLead = (leadId) => {
+    if (selectedLeads.includes(leadId)) {
+      setSelectedLeads(selectedLeads.filter(id => id !== leadId))
+    } else {
+      setSelectedLeads([...selectedLeads, leadId])
+    }
+  }
+
+  const exportLeads = () => {
+    const csv = [
+      ['Name', 'Company', 'Title', 'Email', 'LinkedIn', 'Phone', 'Status', 'Score'].join(','),
+      ...leads.map(lead => [
+        lead.name,
+        lead.company,
+        lead.title,
+        lead.email || '',
+        lead.linkedin_url || '',
+        lead.phone || '',
+        lead.status,
+        lead.score || 0
+      ].join(','))
+    ].join('\n')
+
+    const blob = new Blob([csv], { type: 'text/csv' })
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${campaign?.name || 'campaign'}_leads.csv`
+    a.click()
+  }
+
+  const getStatusBadge = (status) => {
+    const badges = {
+      new: 'bg-gray-100 text-gray-800',
+      contacted: 'bg-blue-100 text-blue-800',
+      responded: 'bg-green-100 text-green-800',
+      qualified: 'bg-purple-100 text-purple-800',
+      unqualified: 'bg-red-100 text-red-800'
+    }
+    const icons = {
+      new: '⚪',
+      contacted: '🟢',
+      responded: '💬',
+      qualified: '✅',
+      unqualified: '❌'
+    }
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-blue-600"></div>
-      </div>
+      <span className={`px-2 py-1 rounded-full text-xs font-semibold ${badges[status] || badges.new}`}>
+        {icons[status]} {status.charAt(0).toUpperCase() + status.slice(1)}
+      </span>
     )
+  }
+
+  const getScoreColor = (score) => {
+    if (score >= 70) return 'text-green-600'
+    if (score >= 40) return 'text-yellow-600'
+    return 'text-red-600'
+  }
+
+  const formatDate = (dateString) => {
+    if (!dateString) return 'Never'
+    const date = new Date(dateString)
+    const now = new Date()
+    const diff = now - date
+    
+    if (diff < 3600000) return `${Math.floor(diff / 60000)} min ago`
+    if (diff < 86400000) return `${Math.floor(diff / 3600000)} hours ago`
+    if (diff < 604800000) return `${Math.floor(diff / 86400000)} days ago`
+    return date.toLocaleDateString()
   }
 
   if (!campaign) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-center">
-          <h1 className="text-2xl font-bold text-gray-900 mb-4">Campaign Not Found</h1>
-          <button
-            onClick={() => router.push('/dashboard')}
-            className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700"
-          >
-            Back to Dashboard
-          </button>
-        </div>
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-gray-50 p-8">
       {/* Header */}
-      <header className="bg-white shadow">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center py-6">
-            <div>
-              <button
-                onClick={() => router.push('/dashboard')}
-                className="text-blue-600 hover:text-blue-800 mb-2"
-              >
-                ← Back to Dashboard
-              </button>
-              <h1 className="text-3xl font-bold text-gray-900">{campaign.name}</h1>
-              <p className="text-gray-600">{campaign.description}</p>
-            </div>
-            <div className="flex space-x-4">
-              <button
-                onClick={() => setShowSheetsImport(true)}
-                className="bg-purple-600 text-white px-4 py-2 rounded-md hover:bg-purple-700 flex items-center"
-              >
-                <TableCellsIcon className="h-5 w-5 mr-2" />
-                Import from Sheets
-              </button>
-              <button
-                onClick={() => setShowUploadModal(true)}
-                className="bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700 flex items-center"
-              >
-                <DocumentArrowUpIcon className="h-5 w-5 mr-2" />
-                Upload Leads
-              </button>
-              <button
-                onClick={() => setShowLeadModal(true)}
-                className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 flex items-center"
-              >
-                <PlusIcon className="h-5 w-5 mr-2" />
-                Add Lead
-              </button>
-            </div>
-          </div>
-        </div>
-      </header>
+      <div className="max-w-7xl mx-auto mb-8">
+        <Link href="/campaigns">
+          <button className="text-blue-600 hover:text-blue-700 mb-4 flex items-center">
+            ← Back to Campaigns
+          </button>
+        </Link>
 
-      {/* Main Content */}
-      <main className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
-        {/* Campaign Stats */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-          <div className="bg-white rounded-lg shadow p-6">
-            <div className="text-2xl font-bold text-blue-600">{leads.length}</div>
-            <div className="text-sm text-gray-600">Total Leads</div>
-          </div>
-          <div className="bg-white rounded-lg shadow p-6">
-            <div className="text-2xl font-bold text-green-600">
-              {outreachLogs.filter(log => log.message_sent).length}
-            </div>
-            <div className="text-sm text-gray-600">Messages Sent</div>
-          </div>
-          <div className="bg-white rounded-lg shadow p-6">
-            <div className="text-2xl font-bold text-yellow-600">
-              {outreachLogs.filter(log => log.response_received).length}
-            </div>
-            <div className="text-sm text-gray-600">Responses</div>
-          </div>
-          <div className="bg-white rounded-lg shadow p-6">
-            <div className="text-2xl font-bold text-purple-600">
-              {outreachLogs.filter(log => log.meeting_scheduled).length}
-            </div>
-            <div className="text-sm text-gray-600">Meetings</div>
-          </div>
-        </div>
-
-        {/* Leads Table */}
-        <div className="bg-white shadow rounded-lg mb-8">
-          <div className="px-6 py-4 border-b border-gray-200">
-            <h2 className="text-lg font-medium text-gray-900">Leads</h2>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Name
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Company
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Title
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Email
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Status
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Actions
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {leads.map((lead) => (
-                  <tr key={lead.id}>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                      {lead.name}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {lead.company}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {lead.title}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {lead.email}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <span className={`px-2 py-1 text-xs rounded-full ${
-                        lead.status === 'completed' ? 'bg-green-100 text-green-800' :
-                        lead.status === 'processing' ? 'bg-blue-100 text-blue-800' :
-                        'bg-gray-100 text-gray-800'
-                      }`}>
-                        {lead.status}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                      <div className="flex space-x-2">
-                        <button
-                          onClick={() => setEditingLead(lead)}
-                          className="text-blue-600 hover:text-blue-900"
-                        >
-                          <PencilIcon className="h-4 w-4" />
-                        </button>
-                        <button
-                          onClick={() => handleDeleteLead(lead.id)}
-                          className="text-red-600 hover:text-red-900"
-                        >
-                          <TrashIcon className="h-4 w-4" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        {/* Outreach Logs */}
-        <div className="bg-white shadow rounded-lg">
-          <div className="px-6 py-4 border-b border-gray-200">
-            <h2 className="text-lg font-medium text-gray-900">Outreach Logs</h2>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Lead
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Channel
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Sent At
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Response
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Meeting
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Status
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {outreachLogs.map((log) => {
-                  const lead = leads.find(l => l.id === log.lead_id)
-                  return (
-                    <tr key={log.id}>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                        {lead?.name || 'Unknown'}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {log.channel}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {log.sent_at ? new Date(log.sent_at).toLocaleDateString() : '-'}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        {log.response_received ? (
-                          <CheckIcon className="h-5 w-5 text-green-500" />
-                        ) : (
-                          <XMarkIcon className="h-5 w-5 text-gray-400" />
-                        )}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        {log.meeting_scheduled ? (
-                          <CheckIcon className="h-5 w-5 text-green-500" />
-                        ) : (
-                          <XMarkIcon className="h-5 w-5 text-gray-400" />
-                        )}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <span className={`px-2 py-1 text-xs rounded-full ${
-                          log.status === 'completed' ? 'bg-green-100 text-green-800' :
-                          log.status === 'failed' ? 'bg-red-100 text-red-800' :
-                          'bg-gray-100 text-gray-800'
-                        }`}>
-                          {log.status}
-                        </span>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </main>
-
-      {/* Google Sheets Import Modal */}
-      {showSheetsImport && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 w-full max-w-4xl max-h-screen overflow-y-auto">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-xl font-bold">Import Leads from Google Sheets</h2>
-              <button
-                onClick={() => setShowSheetsImport(false)}
-                className="text-gray-400 hover:text-gray-600"
-              >
-                <XMarkIcon className="h-6 w-6" />
-              </button>
-            </div>
-            <GoogleSheetsImport
-              campaignId={campaignId}
-              onImportComplete={handleSheetsImportComplete}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Upload Modal */}
-      {showUploadModal && (
-        <FileUploadModal
-          onClose={() => setShowUploadModal(false)}
-          onUpload={handleFileUpload}
-        />
-      )}
-
-      {/* Lead Modal */}
-      {showLeadModal && (
-        <LeadModal
-          onClose={() => setShowLeadModal(false)}
-          onSubmit={handleCreateLead}
-        />
-      )}
-
-      {/* Edit Lead Modal */}
-      {editingLead && (
-        <LeadModal
-          lead={editingLead}
-          onClose={() => setEditingLead(null)}
-          onSubmit={(data) => handleUpdateLead(editingLead.id, data)}
-        />
-      )}
-    </div>
-  )
-}
-
-// File Upload Modal Component
-function FileUploadModal({ onClose, onUpload }) {
-  const [file, setFile] = useState(null)
-  const [dragActive, setDragActive] = useState(false)
-
-  const handleDrag = (e) => {
-    e.preventDefault()
-    e.stopPropagation()
-    if (e.type === "dragenter" || e.type === "dragover") {
-      setDragActive(true)
-    } else if (e.type === "dragleave") {
-      setDragActive(false)
-    }
-  }
-
-  const handleDrop = (e) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setDragActive(false)
-    
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      setFile(e.dataTransfer.files[0])
-    }
-  }
-
-  const handleFileSelect = (e) => {
-    if (e.target.files && e.target.files[0]) {
-      setFile(e.target.files[0])
-    }
-  }
-
-  const handleSubmit = (e) => {
-    e.preventDefault()
-    if (file) {
-      onUpload(file)
-    }
-  }
-
-  return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg p-6 w-full max-w-md">
-        <h2 className="text-xl font-bold mb-4">Upload Leads</h2>
-        
-        <form onSubmit={handleSubmit}>
-          <div
-            className={`border-2 border-dashed rounded-lg p-6 text-center ${
-              dragActive ? 'border-blue-500 bg-blue-50' : 'border-gray-300'
-            }`}
-            onDragEnter={handleDrag}
-            onDragLeave={handleDrag}
-            onDragOver={handleDrag}
-            onDrop={handleDrop}
-          >
-            {file ? (
-              <div>
-                <p className="text-sm text-gray-600">{file.name}</p>
-                <button
-                  type="button"
-                  onClick={() => setFile(null)}
-                  className="text-red-600 text-sm mt-2"
+        <div className="bg-white rounded-lg shadow p-6 mb-6">
+          <div className="flex justify-between items-start">
+            <div className="flex-1">
+              {editingName ? (
+                <div className="flex items-center gap-2 mb-2">
+                  <input
+                    type="text"
+                    value={newName}
+                    onChange={(e) => setNewName(e.target.value)}
+                    className="text-2xl font-bold border-b-2 border-blue-600 focus:outline-none"
+                    autoFocus
+                  />
+                  <button
+                    onClick={() => updateCampaign({ name: newName })}
+                    className="text-green-600 hover:text-green-700"
+                  >
+                    ✓
+                  </button>
+                  <button
+                    onClick={() => {
+                      setEditingName(false)
+                      setNewName(campaign.name)
+                    }}
+                    className="text-red-600 hover:text-red-700"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ) : (
+                <h1
+                  className="text-2xl font-bold text-gray-900 mb-2 cursor-pointer hover:text-blue-600"
+                  onClick={() => setEditingName(true)}
                 >
-                  Remove
-                </button>
+                  📊 {campaign.name}
+                </h1>
+              )}
+              <p className="text-gray-600">{campaign.description || 'No description'}</p>
+            </div>
+            <div className="flex gap-2 ml-4">
+              <select
+                value={campaign.status}
+                onChange={(e) => updateCampaign({ status: e.target.value })}
+                className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="draft">Draft</option>
+                <option value="active">Active</option>
+                <option value="paused">Paused</option>
+                <option value="completed">Completed</option>
+              </select>
+            </div>
+          </div>
+          <div className="text-sm text-gray-500 mt-2">
+            Created: {formatDate(campaign.created_at)}
+          </div>
+        </div>
+
+        {/* Stats Cards */}
+        {stats && (
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+            <div className="bg-white rounded-lg shadow p-6">
+              <div className="text-sm text-gray-600 mb-1">Total Leads</div>
+              <div className="text-3xl font-bold text-gray-900">{stats.total_leads}</div>
+              <div className="text-xs text-gray-500 mt-1">
+                {stats.new_leads} new
               </div>
-            ) : (
-              <div>
-                <DocumentArrowUpIcon className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-                <p className="text-sm text-gray-600 mb-2">
-                  Drag and drop your CSV/Excel file here, or click to select
-                </p>
-                <input
-                  type="file"
-                  accept=".csv,.xlsx,.xls"
-                  onChange={handleFileSelect}
-                  className="hidden"
-                  id="file-upload"
-                />
-                <label
-                  htmlFor="file-upload"
-                  className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 cursor-pointer"
-                >
-                  Select File
-                </label>
+            </div>
+            <div className="bg-white rounded-lg shadow p-6">
+              <div className="text-sm text-gray-600 mb-1">Contacted</div>
+              <div className="text-3xl font-bold text-blue-600">{stats.contacted_leads}</div>
+              <div className="text-xs text-gray-500 mt-1">
+                {stats.contact_rate}% of total
+              </div>
+            </div>
+            <div className="bg-white rounded-lg shadow p-6">
+              <div className="text-sm text-gray-600 mb-1">Replies</div>
+              <div className="text-3xl font-bold text-green-600">{stats.replied_leads}</div>
+              <div className="text-xs text-gray-500 mt-1">
+                {stats.reply_rate}% reply rate
+              </div>
+            </div>
+            <div className="bg-white rounded-lg shadow p-6">
+              <div className="text-sm text-gray-600 mb-1">Qualified</div>
+              <div className="text-3xl font-bold text-purple-600">{stats.qualified_leads}</div>
+              <div className="text-xs text-gray-500 mt-1">
+                {stats.qualification_rate}% of replies
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Tabs */}
+        <div className="bg-white rounded-lg shadow mb-6">
+          <div className="flex border-b">
+            <button
+              className={`px-6 py-3 font-semibold ${
+                activeTab === 'leads'
+                  ? 'text-blue-600 border-b-2 border-blue-600'
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+              onClick={() => setActiveTab('leads')}
+            >
+              Leads ({stats?.total_leads || 0})
+            </button>
+            <button
+              className={`px-6 py-3 font-semibold ${
+                activeTab === 'activity'
+                  ? 'text-blue-600 border-b-2 border-blue-600'
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+              onClick={() => setActiveTab('activity')}
+            >
+              Activity
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Leads Tab */}
+      {activeTab === 'leads' && (
+        <div className="max-w-7xl mx-auto">
+          {/* Search and Filters */}
+          <div className="bg-white rounded-lg shadow p-4 mb-6">
+            <div className="flex flex-col md:flex-row gap-4 mb-4">
+              <input
+                type="text"
+                placeholder="🔍 Search leads..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+              />
+              <select
+                value={filterStatus}
+                onChange={(e) => setFilterStatus(e.target.value)}
+                className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="all">All Statuses</option>
+                <option value="new">New</option>
+                <option value="contacted">Contacted</option>
+                <option value="responded">Responded</option>
+                <option value="qualified">Qualified</option>
+                <option value="unqualified">Unqualified</option>
+              </select>
+              <button
+                onClick={exportLeads}
+                className="px-4 py-2 bg-green-600 text-white rounded-lg font-semibold hover:bg-green-700"
+              >
+                📥 Export CSV
+              </button>
+            </div>
+
+            {selectedLeads.length > 0 && (
+              <div className="flex items-center gap-4 py-2 px-4 bg-blue-50 rounded-lg">
+                <span className="text-sm font-semibold">{selectedLeads.length} selected</span>
+                <div className="relative">
+                  <button
+                    onClick={() => setShowBulkActions(!showBulkActions)}
+                    className="px-4 py-2 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700"
+                  >
+                    Bulk Actions ▼
+                  </button>
+                  {showBulkActions && (
+                    <div className="absolute top-full left-0 mt-2 bg-white rounded-lg shadow-lg border z-10 min-w-[200px]">
+                      <button
+                        onClick={() => bulkUpdateLeads({ status: 'contacted' })}
+                        className="w-full px-4 py-2 text-left hover:bg-gray-100"
+                      >
+                        Mark as Contacted
+                      </button>
+                      <button
+                        onClick={() => bulkUpdateLeads({ status: 'qualified' })}
+                        className="w-full px-4 py-2 text-left hover:bg-gray-100"
+                      >
+                        Mark as Qualified
+                      </button>
+                      <button
+                        onClick={() => bulkUpdateLeads({ status: 'unqualified' })}
+                        className="w-full px-4 py-2 text-left hover:bg-gray-100"
+                      >
+                        Mark as Unqualified
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (confirm(`Delete ${selectedLeads.length} leads?`)) {
+                            Promise.all(selectedLeads.map(id => deleteLead(id)))
+                            setSelectedLeads([])
+                            setShowBulkActions(false)
+                          }
+                        }}
+                        className="w-full px-4 py-2 text-left hover:bg-red-50 text-red-600"
+                      >
+                        Delete Selected
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </div>
 
-          <div className="mt-4 text-xs text-gray-500">
-            <p>Required columns: name, company, title</p>
-            <p>Optional columns: email, linkedin_url, phone, industry, company_size, location</p>
+          {/* Leads Table */}
+          <div className="bg-white rounded-lg shadow overflow-hidden">
+            {loading ? (
+              <div className="flex justify-center items-center h-64">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+              </div>
+            ) : leads.length === 0 ? (
+              <div className="text-center py-12">
+                <div className="text-4xl mb-4">👤</div>
+                <h3 className="text-lg font-bold text-gray-900 mb-2">No leads found</h3>
+                <p className="text-gray-600">
+                  {searchTerm || filterStatus !== 'all' ? 'Try adjusting your filters' : 'Add leads to this campaign to get started'}
+                </p>
+              </div>
+            ) : (
+              <>
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead className="bg-gray-50 border-b">
+                      <tr>
+                        <th className="px-6 py-3 text-left">
+                          <input
+                            type="checkbox"
+                            checked={selectedLeads.length === leads.length && leads.length > 0}
+                            onChange={toggleSelectAll}
+                            className="rounded"
+                          />
+                        </th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Company</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Title</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Email</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Score</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200">
+                      {leads.map((lead) => (
+                        <tr
+                          key={lead.id}
+                          className="hover:bg-gray-50 cursor-pointer"
+                          onClick={() => setSelectedLead(lead)}
+                        >
+                          <td className="px-6 py-4" onClick={(e) => e.stopPropagation()}>
+                            <input
+                              type="checkbox"
+                              checked={selectedLeads.includes(lead.id)}
+                              onChange={() => toggleSelectLead(lead.id)}
+                              className="rounded"
+                            />
+                          </td>
+                          <td className="px-6 py-4 text-sm font-medium text-gray-900">
+                            {lead.name}
+                          </td>
+                          <td className="px-6 py-4 text-sm text-gray-600">
+                            {lead.company}
+                          </td>
+                          <td className="px-6 py-4 text-sm text-gray-600">
+                            {lead.title}
+                          </td>
+                          <td className="px-6 py-4 text-sm text-gray-600">
+                            {lead.email || '-'}
+                          </td>
+                          <td className="px-6 py-4">
+                            {getStatusBadge(lead.status)}
+                          </td>
+                          <td className="px-6 py-4">
+                            <span className={`text-sm font-semibold ${getScoreColor(lead.score || 0)}`}>
+                              {lead.score || 0}
+                            </span>
+                          </td>
+                          <td className="px-6 py-4" onClick={(e) => e.stopPropagation()}>
+                            <button
+                              onClick={() => deleteLead(lead.id)}
+                              className="text-red-600 hover:text-red-700"
+                            >
+                              🗑️
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Pagination */}
+                <div className="px-6 py-4 border-t flex justify-between items-center">
+                  <div className="text-sm text-gray-600">
+                    Showing {((currentPage - 1) * leadsPerPage) + 1} - {Math.min(currentPage * leadsPerPage, stats?.total_leads || 0)} of {stats?.total_leads || 0}
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      disabled={currentPage === 1}
+                      onClick={() => setCurrentPage(currentPage - 1)}
+                      className="px-4 py-2 border rounded-lg disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
+                    >
+                      ← Previous
+                    </button>
+                    <button
+                      disabled={currentPage * leadsPerPage >= (stats?.total_leads || 0)}
+                      onClick={() => setCurrentPage(currentPage + 1)}
+                      className="px-4 py-2 border rounded-lg disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
+                    >
+                      Next →
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
+        </div>
+      )}
 
-          <div className="flex space-x-3 mt-6">
-            <button
-              type="submit"
-              disabled={!file}
-              className="flex-1 bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
-            >
-              Upload
-            </button>
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex-1 bg-gray-300 text-gray-700 px-4 py-2 rounded-md hover:bg-gray-400"
-            >
-              Cancel
-            </button>
+      {/* Activity Tab */}
+      {activeTab === 'activity' && (
+        <div className="max-w-7xl mx-auto">
+          <div className="bg-white rounded-lg shadow p-6">
+            <div className="text-center py-12 text-gray-500">
+              Activity timeline coming soon...
+            </div>
           </div>
-        </form>
-      </div>
-    </div>
-  )
-}
+        </div>
+      )}
 
-// Lead Modal Component
-function LeadModal({ lead, onClose, onSubmit }) {
-  const [formData, setFormData] = useState({
-    name: lead?.name || '',
-    company: lead?.company || '',
-    title: lead?.title || '',
-    email: lead?.email || '',
-    linkedin_url: lead?.linkedin_url || '',
-    phone: lead?.phone || '',
-    industry: lead?.industry || '',
-    company_size: lead?.company_size || '',
-    location: lead?.location || ''
-  })
-
-  const handleSubmit = (e) => {
-    e.preventDefault()
-    onSubmit(formData)
-  }
-
-  return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg p-6 w-full max-w-md max-h-screen overflow-y-auto">
-        <h2 className="text-xl font-bold mb-4">
-          {lead ? 'Edit Lead' : 'Add New Lead'}
-        </h2>
-        
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700">Name *</label>
-            <input
-              type="text"
-              value={formData.name}
-              onChange={(e) => setFormData({...formData, name: e.target.value})}
-              className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
-              required
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700">Company *</label>
-            <input
-              type="text"
-              value={formData.company}
-              onChange={(e) => setFormData({...formData, company: e.target.value})}
-              className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
-              required
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700">Title *</label>
-            <input
-              type="text"
-              value={formData.title}
-              onChange={(e) => setFormData({...formData, title: e.target.value})}
-              className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
-              required
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700">Email</label>
-            <input
-              type="email"
-              value={formData.email}
-              onChange={(e) => setFormData({...formData, email: e.target.value})}
-              className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700">LinkedIn URL</label>
-            <input
-              type="url"
-              value={formData.linkedin_url}
-              onChange={(e) => setFormData({...formData, linkedin_url: e.target.value})}
-              className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700">Phone</label>
-            <input
-              type="tel"
-              value={formData.phone}
-              onChange={(e) => setFormData({...formData, phone: e.target.value})}
-              className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700">Industry</label>
-            <input
-              type="text"
-              value={formData.industry}
-              onChange={(e) => setFormData({...formData, industry: e.target.value})}
-              className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700">Company Size</label>
-            <input
-              type="text"
-              value={formData.company_size}
-              onChange={(e) => setFormData({...formData, company_size: e.target.value})}
-              className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700">Location</label>
-            <input
-              type="text"
-              value={formData.location}
-              onChange={(e) => setFormData({...formData, location: e.target.value})}
-              className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
-            />
-          </div>
-
-          <div className="flex space-x-3">
-            <button
-              type="submit"
-              className="flex-1 bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700"
-            >
-              {lead ? 'Update Lead' : 'Create Lead'}
-            </button>
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex-1 bg-gray-300 text-gray-700 px-4 py-2 rounded-md hover:bg-gray-400"
-            >
-              Cancel
-            </button>
-          </div>
-        </form>
-      </div>
+      {/* Lead Detail Modal */}
+      {selectedLead && (
+        <LeadDetailModal
+          lead={selectedLead}
+          onClose={() => setSelectedLead(null)}
+          onUpdate={(updatedLead) => {
+            setLeads(leads.map(l => l.id === updatedLead.id ? updatedLead : l))
+            setSelectedLead(null)
+            fetchStats()
+          }}
+        />
+      )}
     </div>
   )
 }

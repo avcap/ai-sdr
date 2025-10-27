@@ -104,7 +104,51 @@ class LeadResponse(BaseModel):
     company_size: Optional[str] = None
     location: Optional[str] = None
     status: str
+    score: Optional[int] = 0
+    data: Optional[Dict[str, Any]] = {}
     created_at: str
+    updated_at: Optional[str] = None
+
+class LeadUpdate(BaseModel):
+    name: Optional[str] = None
+    company: Optional[str] = None
+    title: Optional[str] = None
+    email: Optional[str] = None
+    linkedin_url: Optional[str] = None
+    phone: Optional[str] = None
+    industry: Optional[str] = None
+    company_size: Optional[str] = None
+    location: Optional[str] = None
+    status: Optional[str] = None
+    score: Optional[int] = None
+
+class CampaignUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    target_audience: Optional[str] = None
+    value_proposition: Optional[str] = None
+    call_to_action: Optional[str] = None
+    status: Optional[str] = None
+
+class CampaignStats(BaseModel):
+    campaign_id: str
+    total_leads: int
+    contacted_leads: int
+    replied_leads: int
+    qualified_leads: int
+    new_leads: int
+    reply_rate: float
+    contact_rate: float
+    qualification_rate: float
+    status_breakdown: Dict[str, int]
+
+class CampaignWithStats(CampaignResponse):
+    total_leads: int = 0
+    contacted_leads: int = 0
+    replied_leads: int = 0
+    reply_rate: float = 0.0
+    last_activity: Optional[str] = None
+    progress_percentage: float = 0.0
 
 # API Endpoints
 
@@ -282,20 +326,54 @@ async def create_campaign(
         logger.error(f"❌ Error creating campaign: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/campaigns", response_model=List[CampaignResponse])
+@app.get("/campaigns", response_model=List[CampaignWithStats])
 async def get_campaigns(
     current_user: dict = Depends(get_current_user)
 ):
-    """Get all campaigns for the current user"""
+    """Get all campaigns for the current user with aggregated stats"""
     try:
         logger.info(f"📋 Getting campaigns for user: {current_user['user_id']}")
         
-        result = supabase_service.client.table("campaigns").select("*").eq("tenant_id", current_user["tenant_id"]).execute()
+        result = supabase_service.client.table("campaigns").select("*").eq("tenant_id", current_user["tenant_id"]).order("created_at", desc=True).execute()
         
         campaigns = result.data or []
         logger.info(f"✅ Found {len(campaigns)} campaigns")
         
-        return [CampaignResponse(**campaign) for campaign in campaigns]
+        # Enrich each campaign with stats
+        campaigns_with_stats = []
+        for campaign in campaigns:
+            # Get lead counts for this campaign
+            leads_result = supabase_service.client.table("leads").select("status, data").eq("campaign_id", campaign["id"]).execute()
+            leads = leads_result.data or []
+            
+            total_leads = len(leads)
+            contacted_leads = len([l for l in leads if l.get("status") in ["contacted", "responded", "qualified", "unqualified"]])
+            replied_leads = len([l for l in leads if l.get("status") in ["responded", "qualified"]])
+            
+            reply_rate = (replied_leads / contacted_leads * 100) if contacted_leads > 0 else 0.0
+            progress_percentage = (contacted_leads / total_leads * 100) if total_leads > 0 else 0.0
+            
+            # Get last activity from lead data
+            last_activity = None
+            for lead in leads:
+                if lead.get("data") and isinstance(lead["data"], dict):
+                    outreach_log = lead["data"].get("outreach_log", [])
+                    if outreach_log and len(outreach_log) > 0:
+                        last_activity = outreach_log[-1].get("timestamp")
+                        break
+            
+            campaign_with_stats = CampaignWithStats(
+                **campaign,
+                total_leads=total_leads,
+                contacted_leads=contacted_leads,
+                replied_leads=replied_leads,
+                reply_rate=round(reply_rate, 1),
+                last_activity=last_activity,
+                progress_percentage=round(progress_percentage, 1)
+            )
+            campaigns_with_stats.append(campaign_with_stats)
+        
+        return campaigns_with_stats
         
     except Exception as e:
         logger.error(f"❌ Error getting campaigns: {e}")
@@ -321,6 +399,132 @@ async def get_campaign(
             
     except Exception as e:
         logger.error(f"❌ Error getting campaign: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/campaigns/{campaign_id}", response_model=CampaignResponse)
+async def update_campaign(
+    campaign_id: str,
+    updates: CampaignUpdate,
+    current_user: dict = Depends(get_current_user)
+):
+    """Update a campaign"""
+    try:
+        logger.info(f"✏️ Updating campaign: {campaign_id}")
+        
+        # Verify campaign exists and belongs to user
+        campaign_result = supabase_service.client.table("campaigns").select("*").eq("id", campaign_id).eq("tenant_id", current_user["tenant_id"]).execute()
+        
+        if not campaign_result.data:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        
+        # Build update dict (only include fields that were provided)
+        update_data = {k: v for k, v in updates.dict().items() if v is not None}
+        
+        if not update_data:
+            # No updates provided, return existing campaign
+            return CampaignResponse(**campaign_result.data[0])
+        
+        # Update campaign
+        result = supabase_service.client.table("campaigns").update(update_data).eq("id", campaign_id).execute()
+        
+        if result.data:
+            updated_campaign = result.data[0]
+            logger.info(f"✅ Campaign updated: {updated_campaign['name']}")
+            return CampaignResponse(**updated_campaign)
+        else:
+            raise HTTPException(status_code=500, detail="Failed to update campaign")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error updating campaign: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/campaigns/{campaign_id}")
+async def delete_campaign(
+    campaign_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Delete a campaign and all associated leads"""
+    try:
+        logger.info(f"🗑️ Deleting campaign: {campaign_id}")
+        
+        # Verify campaign exists and belongs to user
+        campaign_result = supabase_service.client.table("campaigns").select("name").eq("id", campaign_id).eq("tenant_id", current_user["tenant_id"]).execute()
+        
+        if not campaign_result.data:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        
+        campaign_name = campaign_result.data[0]["name"]
+        
+        # Delete campaign (leads will be cascade deleted due to foreign key)
+        supabase_service.client.table("campaigns").delete().eq("id", campaign_id).execute()
+        
+        logger.info(f"✅ Campaign deleted: {campaign_name}")
+        return {"success": True, "message": f"Campaign '{campaign_name}' deleted successfully"}
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error deleting campaign: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/campaigns/{campaign_id}/stats", response_model=CampaignStats)
+async def get_campaign_stats(
+    campaign_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get detailed statistics for a campaign"""
+    try:
+        logger.info(f"📊 Getting stats for campaign: {campaign_id}")
+        
+        # Verify campaign exists
+        campaign_result = supabase_service.client.table("campaigns").select("id").eq("id", campaign_id).eq("tenant_id", current_user["tenant_id"]).execute()
+        
+        if not campaign_result.data:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        
+        # Get all leads for this campaign
+        leads_result = supabase_service.client.table("leads").select("status").eq("campaign_id", campaign_id).execute()
+        leads = leads_result.data or []
+        
+        total_leads = len(leads)
+        new_leads = len([l for l in leads if l.get("status") == "new"])
+        contacted_leads = len([l for l in leads if l.get("status") in ["contacted", "responded", "qualified", "unqualified"]])
+        replied_leads = len([l for l in leads if l.get("status") in ["responded", "qualified"]])
+        qualified_leads = len([l for l in leads if l.get("status") == "qualified"])
+        
+        # Calculate rates
+        reply_rate = (replied_leads / contacted_leads * 100) if contacted_leads > 0 else 0.0
+        contact_rate = (contacted_leads / total_leads * 100) if total_leads > 0 else 0.0
+        qualification_rate = (qualified_leads / replied_leads * 100) if replied_leads > 0 else 0.0
+        
+        # Status breakdown
+        status_breakdown = {}
+        for lead in leads:
+            status = lead.get("status", "new")
+            status_breakdown[status] = status_breakdown.get(status, 0) + 1
+        
+        stats = CampaignStats(
+            campaign_id=campaign_id,
+            total_leads=total_leads,
+            contacted_leads=contacted_leads,
+            replied_leads=replied_leads,
+            qualified_leads=qualified_leads,
+            new_leads=new_leads,
+            reply_rate=round(reply_rate, 1),
+            contact_rate=round(contact_rate, 1),
+            qualification_rate=round(qualification_rate, 1),
+            status_breakdown=status_breakdown
+        )
+        
+        logger.info(f"✅ Stats calculated: {total_leads} total leads")
+        return stats
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error getting campaign stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # Lead endpoints
@@ -487,11 +691,15 @@ async def upload_leads(
 @app.get("/campaigns/{campaign_id}/leads", response_model=List[LeadResponse])
 async def get_leads(
     campaign_id: str,
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user),
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    page: int = 1,
+    limit: int = 50
 ):
-    """Get all leads for a campaign"""
+    """Get leads for a campaign with optional filtering and pagination"""
     try:
-        logger.info(f"📋 Getting leads for campaign: {campaign_id}")
+        logger.info(f"📋 Getting leads for campaign: {campaign_id} (page {page}, limit {limit})")
         
         # Verify campaign belongs to user
         campaign_result = supabase_service.client.table("campaigns").select("id").eq("id", campaign_id).eq("tenant_id", current_user["tenant_id"]).execute()
@@ -499,15 +707,190 @@ async def get_leads(
         if not campaign_result.data:
             raise HTTPException(status_code=404, detail="Campaign not found")
         
-        result = supabase_service.client.table("leads").select("*").eq("campaign_id", campaign_id).eq("tenant_id", current_user["tenant_id"]).execute()
+        # Build query
+        query = supabase_service.client.table("leads").select("*").eq("campaign_id", campaign_id).eq("tenant_id", current_user["tenant_id"])
         
+        # Apply status filter if provided
+        if status and status != 'all':
+            query = query.eq("status", status)
+        
+        # Apply search filter if provided (search in name, company, title)
+        if search:
+            # Note: Supabase doesn't support OR queries easily, so we'll filter in memory
+            # In production, you'd want to use full-text search or add a search endpoint
+            pass
+        
+        # Order by created_at descending
+        query = query.order("created_at", desc=True)
+        
+        # Apply pagination
+        start = (page - 1) * limit
+        end = start + limit - 1
+        query = query.range(start, end)
+        
+        result = query.execute()
         leads = result.data or []
+        
+        # Apply search filter in memory if provided
+        if search:
+            search_lower = search.lower()
+            leads = [
+                lead for lead in leads
+                if (search_lower in lead.get('name', '').lower() or
+                    search_lower in lead.get('company', '').lower() or
+                    search_lower in lead.get('title', '').lower() or
+                    search_lower in lead.get('email', '').lower())
+            ]
+        
         logger.info(f"✅ Found {len(leads)} leads")
         
         return [LeadResponse(**lead) for lead in leads]
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"❌ Error getting leads: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/leads/{lead_id}", response_model=LeadResponse)
+async def get_lead(
+    lead_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get a specific lead by ID"""
+    try:
+        logger.info(f"🔍 Getting lead: {lead_id}")
+        
+        result = supabase_service.client.table("leads").select("*").eq("id", lead_id).eq("tenant_id", current_user["tenant_id"]).execute()
+        
+        if result.data:
+            lead = result.data[0]
+            logger.info(f"✅ Lead found: {lead['name']}")
+            return LeadResponse(**lead)
+        else:
+            raise HTTPException(status_code=404, detail="Lead not found")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error getting lead: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/leads/{lead_id}", response_model=LeadResponse)
+async def update_lead(
+    lead_id: str,
+    updates: LeadUpdate,
+    current_user: dict = Depends(get_current_user)
+):
+    """Update a lead"""
+    try:
+        logger.info(f"✏️ Updating lead: {lead_id}")
+        
+        # Verify lead exists and belongs to user
+        lead_result = supabase_service.client.table("leads").select("*").eq("id", lead_id).eq("tenant_id", current_user["tenant_id"]).execute()
+        
+        if not lead_result.data:
+            raise HTTPException(status_code=404, detail="Lead not found")
+        
+        # Build update dict (only include fields that were provided)
+        update_data = {k: v for k, v in updates.dict().items() if v is not None}
+        
+        if not update_data:
+            # No updates provided, return existing lead
+            return LeadResponse(**lead_result.data[0])
+        
+        # Update lead
+        result = supabase_service.client.table("leads").update(update_data).eq("id", lead_id).execute()
+        
+        if result.data:
+            updated_lead = result.data[0]
+            logger.info(f"✅ Lead updated: {updated_lead['name']}")
+            return LeadResponse(**updated_lead)
+        else:
+            raise HTTPException(status_code=500, detail="Failed to update lead")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error updating lead: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/leads/{lead_id}")
+async def delete_lead(
+    lead_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Delete a lead"""
+    try:
+        logger.info(f"🗑️ Deleting lead: {lead_id}")
+        
+        # Verify lead exists and belongs to user
+        lead_result = supabase_service.client.table("leads").select("name").eq("id", lead_id).eq("tenant_id", current_user["tenant_id"]).execute()
+        
+        if not lead_result.data:
+            raise HTTPException(status_code=404, detail="Lead not found")
+        
+        lead_name = lead_result.data[0]["name"]
+        
+        # Delete lead
+        supabase_service.client.table("leads").delete().eq("id", lead_id).execute()
+        
+        logger.info(f"✅ Lead deleted: {lead_name}")
+        return {"success": True, "message": f"Lead '{lead_name}' deleted successfully"}
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error deleting lead: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/campaigns/{campaign_id}/leads/bulk-update")
+async def bulk_update_leads(
+    campaign_id: str,
+    request: Dict[str, Any],
+    current_user: dict = Depends(get_current_user)
+):
+    """Bulk update multiple leads"""
+    try:
+        lead_ids = request.get("lead_ids", [])
+        updates = request.get("updates", {})
+        
+        if not lead_ids:
+            raise HTTPException(status_code=400, detail="No lead IDs provided")
+        
+        if not updates:
+            raise HTTPException(status_code=400, detail="No updates provided")
+        
+        logger.info(f"📝 Bulk updating {len(lead_ids)} leads")
+        
+        # Verify campaign belongs to user
+        campaign_result = supabase_service.client.table("campaigns").select("id").eq("id", campaign_id).eq("tenant_id", current_user["tenant_id"]).execute()
+        
+        if not campaign_result.data:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        
+        # Update each lead (Supabase doesn't support bulk update with IN clause easily)
+        updated_count = 0
+        for lead_id in lead_ids:
+            try:
+                result = supabase_service.client.table("leads").update(updates).eq("id", lead_id).eq("tenant_id", current_user["tenant_id"]).eq("campaign_id", campaign_id).execute()
+                if result.data:
+                    updated_count += 1
+            except Exception as e:
+                logger.warning(f"Failed to update lead {lead_id}: {e}")
+                continue
+        
+        logger.info(f"✅ Updated {updated_count} leads")
+        return {
+            "success": True,
+            "message": f"Successfully updated {updated_count} leads",
+            "updated_count": updated_count
+        }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error bulk updating leads: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # Train Your Team endpoints
