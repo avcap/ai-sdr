@@ -519,10 +519,18 @@ export default function Dashboard() {
             </div>
           )}
 
-          {/* Campaigns */}
+          {/* Recent Campaigns */}
           <div className="bg-white rounded-lg shadow">
-            <div className="px-6 py-4 border-b border-gray-200">
-              <h2 className="text-lg font-semibold text-gray-900">Campaigns</h2>
+            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+              <h2 className="text-lg font-semibold text-gray-900">Recent Campaigns</h2>
+              <Link href="/campaigns">
+                <button className="text-blue-600 hover:text-blue-700 font-medium text-sm flex items-center gap-1">
+                  View All ({campaigns.length})
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                </button>
+              </Link>
             </div>
             <div className="p-6">
               {campaigns.length === 0 ? (
@@ -548,7 +556,7 @@ export default function Dashboard() {
                 </div>
               ) : (
                 <div className="grid gap-4">
-                  {campaigns.map((campaign) => (
+                  {campaigns.slice(0, 3).map((campaign) => (
                     <div key={campaign.id} className="border border-gray-200 rounded-lg p-4">
                       <div className="flex items-center justify-between">
                         <div>

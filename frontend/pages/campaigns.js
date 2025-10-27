@@ -18,7 +18,7 @@ export default function CampaignsPage() {
   const fetchCampaigns = async () => {
     try {
       setLoading(true)
-      const response = await fetch('http://localhost:8000/campaigns', {
+      const response = await fetch('/api/campaigns', {
         headers: {
           'Authorization': 'Bearer demo_token'
         }
@@ -34,7 +34,7 @@ export default function CampaignsPage() {
 
   const deleteCampaign = async (campaignId) => {
     try {
-      const response = await fetch(`http://localhost:8000/campaigns/${campaignId}`, {
+      const response = await fetch(`/api/campaigns/${campaignId}`, {
         method: 'DELETE',
         headers: {
           'Authorization': 'Bearer demo_token'

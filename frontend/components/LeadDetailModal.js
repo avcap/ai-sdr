@@ -7,7 +7,7 @@ export default function LeadDetailModal({ lead, onClose, onUpdate }) {
   const handleSave = async () => {
     try {
       setSaving(true)
-      const response = await fetch(`http://localhost:8000/leads/${lead.id}`, {
+      const response = await fetch(`/api/leads/${lead.id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',

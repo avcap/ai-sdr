@@ -33,7 +33,7 @@ export default function CampaignDetailPage() {
 
   const fetchCampaign = async () => {
     try {
-      const response = await fetch(`http://localhost:8000/campaigns/${campaignId}`, {
+      const response = await fetch(`/api/campaigns/${campaignId}`, {
         headers: { 'Authorization': 'Bearer demo_token' }
       })
       const data = await response.json()
@@ -55,7 +55,7 @@ export default function CampaignDetailPage() {
       })
       
       const response = await fetch(
-        `http://localhost:8000/campaigns/${campaignId}/leads?${params}`,
+        `/api/campaigns/${campaignId}/leads?${params}`,
         { headers: { 'Authorization': 'Bearer demo_token' } }
       )
       const data = await response.json()
@@ -69,7 +69,7 @@ export default function CampaignDetailPage() {
 
   const fetchStats = async () => {
     try {
-      const response = await fetch(`http://localhost:8000/campaigns/${campaignId}/stats`, {
+      const response = await fetch(`/api/campaigns/${campaignId}/stats`, {
         headers: { 'Authorization': 'Bearer demo_token' }
       })
       const data = await response.json()
@@ -81,7 +81,7 @@ export default function CampaignDetailPage() {
 
   const updateCampaign = async (updates) => {
     try {
-      const response = await fetch(`http://localhost:8000/campaigns/${campaignId}`, {
+      const response = await fetch(`/api/campaigns/${campaignId}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -103,7 +103,7 @@ export default function CampaignDetailPage() {
     if (!confirm('Are you sure you want to delete this lead?')) return
     
     try {
-      const response = await fetch(`http://localhost:8000/leads/${leadId}`, {
+      const response = await fetch(`/api/leads/${leadId}`, {
         method: 'DELETE',
         headers: { 'Authorization': 'Bearer demo_token' }
       })
@@ -121,7 +121,7 @@ export default function CampaignDetailPage() {
     if (selectedLeads.length === 0) return
     
     try {
-      const response = await fetch(`http://localhost:8000/campaigns/${campaignId}/leads/bulk-update`, {
+      const response = await fetch(`/api/campaigns/${campaignId}/leads/bulk-update`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
