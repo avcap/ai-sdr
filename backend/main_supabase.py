@@ -2174,6 +2174,479 @@ async def get_campaign_insights(
         logger.error(f"❌ Error getting campaign insights: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# ==============================================
+# PHASE 2: ANALYTICS & PERFORMANCE TRACKING
+# ==============================================
+
+class AnalyticsTimeSeriesResponse(BaseModel):
+    date: str
+    emails_sent: int
+    emails_opened: int
+    emails_clicked: int
+    emails_replied: int
+    leads_contacted: int
+    leads_responded: int
+    open_rate: float
+    reply_rate: float
+
+class ActivityItem(BaseModel):
+    id: str
+    activity_type: str
+    title: str
+    description: Optional[str] = None
+    lead_id: Optional[str] = None
+    lead_name: Optional[str] = None
+    timestamp: str
+
+class FunnelStats(BaseModel):
+    stage: str
+    count: int
+    percentage: float
+    conversion_rate: Optional[float] = None
+
+class CampaignAnalyticsResponse(BaseModel):
+    campaign_id: str
+    campaign_name: str
+    time_series: List[AnalyticsTimeSeriesResponse]
+    total_emails_sent: int
+    total_emails_opened: int
+    total_emails_replied: int
+    avg_open_rate: float
+    avg_reply_rate: float
+    best_day: Optional[str] = None
+    engagement_trend: str  # "improving", "declining", "stable"
+
+@app.get("/campaigns/{campaign_id}/analytics", response_model=CampaignAnalyticsResponse)
+async def get_campaign_analytics(
+    campaign_id: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get time-series analytics for a campaign"""
+    try:
+        logger.info(f"📊 Getting analytics for campaign {campaign_id}")
+        
+        # Get campaign
+        campaign_result = supabase_service.client.table('campaigns').select('*').eq('id', campaign_id).eq('tenant_id', current_user['tenant_id']).execute()
+        
+        if not campaign_result.data:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        
+        campaign = campaign_result.data[0]
+        
+        # Build query for analytics data
+        query = supabase_service.client.table('campaign_analytics').select('*').eq('campaign_id', campaign_id)
+        
+        if start_date:
+            query = query.gte('date', start_date)
+        if end_date:
+            query = query.lte('date', end_date)
+        
+        analytics_result = query.order('date', desc=False).execute()
+        
+        # If no analytics data exists yet, create sample data structure
+        if not analytics_result.data:
+            logger.info(f"No analytics data found for campaign {campaign_id}, returning empty structure")
+            return {
+                "campaign_id": campaign_id,
+                "campaign_name": campaign['name'],
+                "time_series": [],
+                "total_emails_sent": 0,
+                "total_emails_opened": 0,
+                "total_emails_replied": 0,
+                "avg_open_rate": 0.0,
+                "avg_reply_rate": 0.0,
+                "best_day": None,
+                "engagement_trend": "stable"
+            }
+        
+        # Process time series data
+        time_series = []
+        total_sent = 0
+        total_opened = 0
+        total_replied = 0
+        
+        for row in analytics_result.data:
+            time_series.append({
+                "date": row['date'],
+                "emails_sent": row.get('emails_sent', 0),
+                "emails_opened": row.get('emails_opened', 0),
+                "emails_clicked": row.get('emails_clicked', 0),
+                "emails_replied": row.get('emails_replied', 0),
+                "leads_contacted": row.get('leads_contacted', 0),
+                "leads_responded": row.get('leads_responded', 0),
+                "open_rate": float(row.get('open_rate', 0)),
+                "reply_rate": float(row.get('reply_rate', 0))
+            })
+            total_sent += row.get('emails_sent', 0)
+            total_opened += row.get('emails_opened', 0)
+            total_replied += row.get('emails_replied', 0)
+        
+        # Calculate averages
+        avg_open_rate = (total_opened / total_sent * 100) if total_sent > 0 else 0
+        avg_reply_rate = (total_replied / total_sent * 100) if total_sent > 0 else 0
+        
+        # Find best performing day
+        best_day = None
+        if time_series:
+            best_day_data = max(time_series, key=lambda x: x['reply_rate'])
+            best_day = best_day_data['date']
+        
+        # Determine engagement trend (simple: compare first half vs second half)
+        engagement_trend = "stable"
+        if len(time_series) >= 4:
+            mid_point = len(time_series) // 2
+            first_half_avg = sum(x['reply_rate'] for x in time_series[:mid_point]) / mid_point
+            second_half_avg = sum(x['reply_rate'] for x in time_series[mid_point:]) / (len(time_series) - mid_point)
+            
+            if second_half_avg > first_half_avg * 1.1:
+                engagement_trend = "improving"
+            elif second_half_avg < first_half_avg * 0.9:
+                engagement_trend = "declining"
+        
+        return {
+            "campaign_id": campaign_id,
+            "campaign_name": campaign['name'],
+            "time_series": time_series,
+            "total_emails_sent": total_sent,
+            "total_emails_opened": total_opened,
+            "total_emails_replied": total_replied,
+            "avg_open_rate": round(avg_open_rate, 2),
+            "avg_reply_rate": round(avg_reply_rate, 2),
+            "best_day": best_day,
+            "engagement_trend": engagement_trend
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error getting campaign analytics: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/campaigns/{campaign_id}/activity", response_model=List[ActivityItem])
+async def get_campaign_activity(
+    campaign_id: str,
+    limit: int = 50,
+    activity_type: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get activity timeline for a campaign"""
+    try:
+        logger.info(f"📋 Getting activity for campaign {campaign_id}")
+        
+        # Verify campaign exists and belongs to tenant
+        campaign_result = supabase_service.client.table('campaigns').select('*').eq('id', campaign_id).eq('tenant_id', current_user['tenant_id']).execute()
+        
+        if not campaign_result.data:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        
+        # Build query
+        query = supabase_service.client.table('campaign_activity').select(
+            'id, activity_type, title, description, lead_id, created_at'
+        ).eq('campaign_id', campaign_id)
+        
+        if activity_type:
+            query = query.eq('activity_type', activity_type)
+        
+        activity_result = query.order('created_at', desc=True).limit(limit).execute()
+        
+        # Enrich with lead names
+        activities = []
+        for activity in activity_result.data:
+            lead_name = None
+            if activity.get('lead_id'):
+                lead_result = supabase_service.client.table('leads').select('name').eq('id', activity['lead_id']).execute()
+                if lead_result.data:
+                    lead_name = lead_result.data[0]['name']
+            
+            activities.append({
+                "id": activity['id'],
+                "activity_type": activity['activity_type'],
+                "title": activity['title'],
+                "description": activity.get('description'),
+                "lead_id": activity.get('lead_id'),
+                "lead_name": lead_name,
+                "timestamp": activity['created_at']
+            })
+        
+        return activities
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error getting campaign activity: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/campaigns/{campaign_id}/funnel", response_model=List[FunnelStats])
+async def get_campaign_funnel(
+    campaign_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get conversion funnel statistics for a campaign"""
+    try:
+        logger.info(f"🔽 Getting funnel stats for campaign {campaign_id}")
+        
+        # Verify campaign exists
+        campaign_result = supabase_service.client.table('campaigns').select('*').eq('id', campaign_id).eq('tenant_id', current_user['tenant_id']).execute()
+        
+        if not campaign_result.data:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        
+        # Get lead counts by status
+        leads_result = supabase_service.client.table('leads').select('status').eq('campaign_id', campaign_id).execute()
+        
+        if not leads_result.data:
+            return []
+        
+        # Count leads by status
+        total_leads = len(leads_result.data)
+        status_counts = {}
+        for lead in leads_result.data:
+            status = lead.get('status', 'new')
+            status_counts[status] = status_counts.get(status, 0) + 1
+        
+        # Build funnel (ordered stages)
+        funnel_stages = [
+            ('new', 'New Leads'),
+            ('contacted', 'Contacted'),
+            ('responded', 'Responded'),
+            ('qualified', 'Qualified')
+        ]
+        
+        funnel_data = []
+        previous_count = total_leads
+        
+        for status_key, stage_name in funnel_stages:
+            count = status_counts.get(status_key, 0)
+            percentage = (count / total_leads * 100) if total_leads > 0 else 0
+            conversion_rate = (count / previous_count * 100) if previous_count > 0 else 0
+            
+            funnel_data.append({
+                "stage": stage_name,
+                "count": count,
+                "percentage": round(percentage, 1),
+                "conversion_rate": round(conversion_rate, 1) if status_key != 'new' else None
+            })
+            
+            previous_count = count
+        
+        return funnel_data
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error getting campaign funnel: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/campaigns/{campaign_id}/engagement/track")
+async def track_engagement_event(
+    campaign_id: str,
+    lead_id: str,
+    event_type: str,
+    event_data: Optional[Dict[str, Any]] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    """Track an engagement event (email open, click, reply, etc.)"""
+    try:
+        logger.info(f"📈 Tracking {event_type} event for lead {lead_id}")
+        
+        # Verify lead exists and belongs to campaign
+        lead_result = supabase_service.client.table('leads').select('*').eq('id', lead_id).eq('campaign_id', campaign_id).eq('tenant_id', current_user['tenant_id']).execute()
+        
+        if not lead_result.data:
+            raise HTTPException(status_code=404, detail="Lead not found")
+        
+        # Insert engagement event
+        engagement_data = {
+            "tenant_id": current_user['tenant_id'],
+            "lead_id": lead_id,
+            "campaign_id": campaign_id,
+            "event_type": event_type,
+            "event_data": event_data or {}
+        }
+        
+        result = supabase_service.client.table('lead_engagement').insert(engagement_data).execute()
+        
+        # Update lead status based on event type
+        if event_type == 'email_replied':
+            supabase_service.client.table('leads').update({
+                "status": "responded",
+                "updated_at": datetime.now().isoformat()
+            }).eq('id', lead_id).execute()
+        
+        # Log activity
+        activity_titles = {
+            'email_opened': f"Lead opened email",
+            'email_clicked': f"Lead clicked link in email",
+            'email_replied': f"Lead replied to email",
+            'linkedin_viewed': f"Lead viewed LinkedIn profile",
+            'linkedin_connected': f"Lead connected on LinkedIn",
+            'meeting_scheduled': f"Meeting scheduled with lead"
+        }
+        
+        if event_type in activity_titles:
+            supabase_service.client.table('campaign_activity').insert({
+                "tenant_id": current_user['tenant_id'],
+                "campaign_id": campaign_id,
+                "lead_id": lead_id,
+                "activity_type": event_type,
+                "title": activity_titles[event_type],
+                "description": json.dumps(event_data) if event_data else None
+            }).execute()
+        
+        return {
+            "success": True,
+            "event_id": result.data[0]['id'],
+            "message": f"Engagement event tracked: {event_type}"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error tracking engagement: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/campaigns/{campaign_id}/export")
+async def export_campaign_data(
+    campaign_id: str,
+    format: str = "csv",  # csv or json
+    include_analytics: bool = True,
+    current_user: dict = Depends(get_current_user)
+):
+    """Export campaign data (leads, analytics, activity)"""
+    try:
+        logger.info(f"📥 Exporting campaign {campaign_id} data as {format}")
+        
+        # Verify campaign exists
+        campaign_result = supabase_service.client.table('campaigns').select('*').eq('id', campaign_id).eq('tenant_id', current_user['tenant_id']).execute()
+        
+        if not campaign_result.data:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        
+        campaign = campaign_result.data[0]
+        
+        # Get leads
+        leads_result = supabase_service.client.table('leads').select('*').eq('campaign_id', campaign_id).execute()
+        
+        export_data = {
+            "campaign": {
+                "id": campaign['id'],
+                "name": campaign['name'],
+                "description": campaign.get('description'),
+                "status": campaign['status'],
+                "created_at": campaign['created_at']
+            },
+            "leads": leads_result.data,
+            "export_date": datetime.now().isoformat()
+        }
+        
+        # Include analytics if requested
+        if include_analytics:
+            analytics_result = supabase_service.client.table('campaign_analytics').select('*').eq('campaign_id', campaign_id).execute()
+            export_data['analytics'] = analytics_result.data
+        
+        if format == "csv":
+            # Convert leads to CSV format
+            import io
+            import csv
+            
+            output = io.StringIO()
+            if leads_result.data:
+                fieldnames = ['name', 'email', 'company', 'title', 'status', 'score', 'created_at']
+                writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction='ignore')
+                writer.writeheader()
+                writer.writerows(leads_result.data)
+            
+            from fastapi.responses import StreamingResponse
+            
+            output.seek(0)
+            return StreamingResponse(
+                iter([output.getvalue()]),
+                media_type="text/csv",
+                headers={
+                    "Content-Disposition": f"attachment; filename=campaign_{campaign['name'].replace(' ', '_')}_leads.csv"
+                }
+            )
+        else:
+            # Return JSON
+            return export_data
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error exporting campaign data: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/analytics/dashboard")
+async def get_analytics_dashboard(
+    current_user: dict = Depends(get_current_user)
+):
+    """Get overall analytics dashboard for all campaigns"""
+    try:
+        logger.info(f"📊 Getting analytics dashboard for tenant {current_user['tenant_id']}")
+        
+        # Get all campaigns for tenant
+        campaigns_result = supabase_service.client.table('campaigns').select('id, name, status, created_at').eq('tenant_id', current_user['tenant_id']).execute()
+        
+        if not campaigns_result.data:
+            return {
+                "total_campaigns": 0,
+                "active_campaigns": 0,
+                "total_leads": 0,
+                "total_emails_sent": 0,
+                "avg_reply_rate": 0,
+                "top_campaigns": []
+            }
+        
+        campaign_ids = [c['id'] for c in campaigns_result.data]
+        
+        # Get aggregated stats
+        leads_result = supabase_service.client.table('leads').select('campaign_id, status').in_('campaign_id', campaign_ids).execute()
+        
+        total_leads = len(leads_result.data)
+        responded_leads = len([l for l in leads_result.data if l['status'] == 'responded'])
+        
+        # Get email stats from analytics
+        analytics_result = supabase_service.client.table('campaign_analytics').select('campaign_id, emails_sent, emails_replied').in_('campaign_id', campaign_ids).execute()
+        
+        total_emails = sum(a.get('emails_sent', 0) for a in analytics_result.data)
+        total_replies = sum(a.get('emails_replied', 0) for a in analytics_result.data)
+        avg_reply_rate = (total_replies / total_emails * 100) if total_emails > 0 else 0
+        
+        # Calculate top performing campaigns
+        campaign_performance = {}
+        for campaign in campaigns_result.data:
+            campaign_leads = [l for l in leads_result.data if l['campaign_id'] == campaign['id']]
+            campaign_responded = len([l for l in campaign_leads if l['status'] == 'responded'])
+            reply_rate = (campaign_responded / len(campaign_leads) * 100) if campaign_leads else 0
+            
+            campaign_performance[campaign['id']] = {
+                "id": campaign['id'],
+                "name": campaign['name'],
+                "reply_rate": reply_rate,
+                "leads": len(campaign_leads),
+                "responded": campaign_responded
+            }
+        
+        # Sort by reply rate
+        top_campaigns = sorted(campaign_performance.values(), key=lambda x: x['reply_rate'], reverse=True)[:5]
+        
+        return {
+            "total_campaigns": len(campaigns_result.data),
+            "active_campaigns": len([c for c in campaigns_result.data if c['status'] == 'active']),
+            "total_leads": total_leads,
+            "responded_leads": responded_leads,
+            "total_emails_sent": total_emails,
+            "total_replies": total_replies,
+            "avg_reply_rate": round(avg_reply_rate, 2),
+            "top_campaigns": top_campaigns
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting analytics dashboard: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
