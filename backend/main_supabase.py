@@ -24,6 +24,8 @@ from integrations.linkedin_service import LinkedInService
 from integrations.google_sheets_service import GoogleSheetsService
 from integrations.google_oauth_service import GoogleOAuthService
 from services.supabase_service import SupabaseService
+from services.sequence_execution_service import sequence_execution_service
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -39,6 +41,35 @@ except Exception as e:
 
 # FastAPI app
 app = FastAPI(title="AI SDR API", version="1.0.0")
+
+# Initialize background scheduler for sequence execution
+scheduler = AsyncIOScheduler()
+
+@app.on_event("startup")
+async def startup_event():
+    """Start background scheduler on app startup"""
+    try:
+        # Schedule sequence processor to run every 1 minute
+        scheduler.add_job(
+            sequence_execution_service.process_all_sequences,
+            'interval',
+            minutes=1,
+            id='sequence_processor',
+            replace_existing=True
+        )
+        scheduler.start()
+        logger.info("✅ Sequence execution scheduler started (runs every 1 minute)")
+    except Exception as e:
+        logger.error(f"❌ Failed to start scheduler: {e}")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Stop scheduler on app shutdown"""
+    try:
+        scheduler.shutdown()
+        logger.info("✅ Scheduler stopped")
+    except Exception as e:
+        logger.error(f"❌ Error stopping scheduler: {e}")
 
 # CORS middleware
 app.add_middleware(
@@ -268,7 +299,7 @@ async def handle_google_callback(
         logger.error(f"Google OAuth callback error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/auth/google/disconnect")
+@app.delete("/auth/google/disconnect")
 async def disconnect_google(
     current_user: dict = Depends(get_current_user)
 ):
@@ -1320,6 +1351,83 @@ async def execute_smart_campaign(
             
     except Exception as e:
         logger.error(f"Smart Campaign error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/smart-campaign/save-campaign")
+async def save_smart_campaign(
+    request: dict,
+    current_user: dict = Depends(get_current_user)
+):
+    """Save Smart Campaign results as a campaign with leads"""
+    try:
+        campaign_data = request.get("campaign_data", {})
+        premium_leads = request.get("premium_leads", [])
+        backup_leads = request.get("backup_leads", [])
+        
+        logger.info(f"💾 Saving Smart Campaign: {campaign_data.get('name', 'Untitled')}")
+        
+        # Create campaign (store extra data in settings JSONB)
+        campaign = supabase_service.client.table('campaigns').insert({
+            'tenant_id': current_user['tenant_id'],
+            'user_id': current_user['user_id'],
+            'name': campaign_data.get('name', 'Smart Campaign'),
+            'description': campaign_data.get('description', ''),
+            'status': 'active',
+            'settings': {
+                'target_audience': campaign_data.get('target_audience', ''),
+                'value_proposition': campaign_data.get('value_proposition', ''),
+                'call_to_action': campaign_data.get('call_to_action', ''),
+                'campaign_type': 'smart_campaign'
+            }
+        }).execute()
+        
+        if not campaign.data:
+            raise HTTPException(status_code=500, detail="Failed to create campaign")
+        
+        campaign_id = campaign.data[0]['id']
+        logger.info(f"✅ Created campaign {campaign_id}")
+        
+        # Save all leads
+        all_leads = premium_leads + backup_leads
+        leads_to_insert = []
+        
+        for lead in all_leads:
+            leads_to_insert.append({
+                'tenant_id': current_user['tenant_id'],
+                'campaign_id': campaign_id,
+                'name': lead.get('name', ''),
+                'company': lead.get('company', ''),
+                'title': lead.get('title', ''),
+                'email': lead.get('email'),
+                'phone': lead.get('phone'),
+                'linkedin_url': lead.get('linkedin_url'),
+                'industry': lead.get('industry'),
+                'company_size': lead.get('company_size'),
+                'location': lead.get('location'),
+                'status': 'new',
+                'grade': lead.get('grade', 'B'),
+                'score': lead.get('score', 0),
+                'enrichment_status': lead.get('enrichment_status', 'enriched')
+            })
+        
+        if leads_to_insert:
+            leads_result = supabase_service.client.table('leads').insert(leads_to_insert).execute()
+            logger.info(f"✅ Saved {len(leads_to_insert)} leads")
+        
+        return {
+            "success": True,
+            "campaign_id": campaign_id,
+            "id": campaign_id,
+            "name": campaign_data.get('name'),
+            "leads_count": len(all_leads),
+            "leads": all_leads,
+            "message": f"Campaign saved with {len(all_leads)} leads"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error saving Smart Campaign: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/copywriter/personalize-message")
@@ -2646,6 +2754,1265 @@ async def get_analytics_dashboard(
     except Exception as e:
         logger.error(f"❌ Error getting analytics dashboard: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# ==============================================
+# PHASE 3: MULTI-TOUCH SEQUENCES
+# ==============================================
+
+class SequenceCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    settings: Optional[Dict[str, Any]] = {}
+
+class SequenceUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    status: Optional[str] = None
+    settings: Optional[Dict[str, Any]] = None
+
+class SequenceResponse(BaseModel):
+    id: str
+    tenant_id: str
+    user_id: str
+    name: str
+    description: Optional[str] = None
+    status: str
+    steps_count: int
+    total_enrolled: int
+    total_completed: int
+    total_stopped: int
+    settings: Dict[str, Any]
+    created_at: str
+    updated_at: str
+
+class SequenceStepCreate(BaseModel):
+    step_order: int
+    name: str
+    step_type: str  # email, delay, condition, action
+    subject_line: Optional[str] = None
+    body_text: Optional[str] = None
+    body_html: Optional[str] = None
+    delay_days: Optional[int] = 0
+    delay_hours: Optional[int] = 0
+    send_time: Optional[str] = None
+    business_hours_only: Optional[bool] = True
+    condition_type: Optional[str] = None
+    condition_config: Optional[Dict[str, Any]] = {}
+    action_type: Optional[str] = None
+    action_config: Optional[Dict[str, Any]] = {}
+
+class SequenceStepResponse(BaseModel):
+    id: str
+    sequence_id: str
+    step_order: int
+    name: str
+    step_type: str
+    subject_line: Optional[str] = None
+    body_text: Optional[str] = None
+    delay_days: Optional[int] = 0
+    delay_hours: Optional[int] = 0
+    condition_type: Optional[str] = None
+    action_type: Optional[str] = None
+    created_at: str
+
+@app.post("/sequences", response_model=SequenceResponse)
+async def create_sequence(
+    sequence: SequenceCreate,
+    current_user: dict = Depends(get_current_user)
+):
+    """Create a new email sequence"""
+    try:
+        logger.info(f"📧 Creating sequence: {sequence.name}")
+        
+        sequence_data = {
+            "tenant_id": current_user['tenant_id'],
+            "user_id": current_user['user_id'],
+            "name": sequence.name,
+            "description": sequence.description,
+            "status": "draft",
+            "settings": sequence.settings or {}
+        }
+        
+        result = supabase_service.client.table('sequences').insert(sequence_data).execute()
+        
+        logger.info(f"✅ Sequence created: {result.data[0]['id']}")
+        return result.data[0]
+        
+    except Exception as e:
+        logger.error(f"❌ Error creating sequence: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/sequences", response_model=List[SequenceResponse])
+async def get_sequences(
+    status: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get all sequences for the tenant"""
+    try:
+        logger.info(f"📋 Getting sequences for tenant {current_user['tenant_id']}")
+        
+        query = supabase_service.client.table('sequences').select('*').eq('tenant_id', current_user['tenant_id'])
+        
+        if status:
+            query = query.eq('status', status)
+        
+        result = query.order('created_at', desc=True).execute()
+        
+        logger.info(f"✅ Found {len(result.data)} sequences")
+        return result.data
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting sequences: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/sequences/{sequence_id}", response_model=SequenceResponse)
+async def get_sequence(
+    sequence_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get a specific sequence"""
+    try:
+        logger.info(f"🔍 Getting sequence: {sequence_id}")
+        
+        result = supabase_service.client.table('sequences').select('*').eq('id', sequence_id).eq('tenant_id', current_user['tenant_id']).execute()
+        
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Sequence not found")
+        
+        logger.info(f"✅ Sequence found: {result.data[0]['name']}")
+        return result.data[0]
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error getting sequence: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/sequences/{sequence_id}", response_model=SequenceResponse)
+async def update_sequence(
+    sequence_id: str,
+    sequence: SequenceUpdate,
+    current_user: dict = Depends(get_current_user)
+):
+    """Update a sequence"""
+    try:
+        logger.info(f"✏️ Updating sequence: {sequence_id}")
+        
+        # Verify sequence exists and belongs to tenant
+        existing = supabase_service.client.table('sequences').select('*').eq('id', sequence_id).eq('tenant_id', current_user['tenant_id']).execute()
+        
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Sequence not found")
+        
+        # Build update data
+        update_data = {}
+        if sequence.name is not None:
+            update_data['name'] = sequence.name
+        if sequence.description is not None:
+            update_data['description'] = sequence.description
+        if sequence.status is not None:
+            update_data['status'] = sequence.status
+        if sequence.settings is not None:
+            update_data['settings'] = sequence.settings
+        
+        if not update_data:
+            return existing.data[0]
+        
+        update_data['updated_at'] = datetime.now().isoformat()
+        
+        result = supabase_service.client.table('sequences').update(update_data).eq('id', sequence_id).execute()
+        
+        logger.info(f"✅ Sequence updated")
+        return result.data[0]
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error updating sequence: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/sequences/{sequence_id}")
+async def delete_sequence(
+    sequence_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Delete a sequence"""
+    try:
+        logger.info(f"🗑️ Deleting sequence: {sequence_id}")
+        
+        # Verify sequence exists and belongs to tenant
+        existing = supabase_service.client.table('sequences').select('*').eq('id', sequence_id).eq('tenant_id', current_user['tenant_id']).execute()
+        
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Sequence not found")
+        
+        # Check if sequence is active
+        if existing.data[0]['status'] == 'active':
+            raise HTTPException(status_code=400, detail="Cannot delete active sequence. Pause it first.")
+        
+        # Delete sequence (cascade will delete steps and states)
+        supabase_service.client.table('sequences').delete().eq('id', sequence_id).execute()
+        
+        logger.info(f"✅ Sequence deleted")
+        return {"success": True, "message": "Sequence deleted"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error deleting sequence: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/sequences/{sequence_id}/duplicate", response_model=SequenceResponse)
+async def duplicate_sequence(
+    sequence_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Duplicate a sequence with all its steps"""
+    try:
+        logger.info(f"📋 Duplicating sequence: {sequence_id}")
+        
+        # Get original sequence
+        original = supabase_service.client.table('sequences').select('*').eq('id', sequence_id).eq('tenant_id', current_user['tenant_id']).execute()
+        
+        if not original.data:
+            raise HTTPException(status_code=404, detail="Sequence not found")
+        
+        orig_data = original.data[0]
+        
+        # Create new sequence
+        new_sequence_data = {
+            "tenant_id": current_user['tenant_id'],
+            "user_id": current_user['user_id'],
+            "name": f"{orig_data['name']} (Copy)",
+            "description": orig_data.get('description'),
+            "status": "draft",
+            "settings": orig_data.get('settings', {})
+        }
+        
+        new_sequence = supabase_service.client.table('sequences').insert(new_sequence_data).execute()
+        new_sequence_id = new_sequence.data[0]['id']
+        
+        # Get and duplicate steps
+        steps = supabase_service.client.table('sequence_steps').select('*').eq('sequence_id', sequence_id).order('step_order').execute()
+        
+        if steps.data:
+            new_steps = []
+            for step in steps.data:
+                new_step = {
+                    "tenant_id": current_user['tenant_id'],
+                    "sequence_id": new_sequence_id,
+                    "step_order": step['step_order'],
+                    "name": step['name'],
+                    "step_type": step['step_type'],
+                    "subject_line": step.get('subject_line'),
+                    "body_text": step.get('body_text'),
+                    "body_html": step.get('body_html'),
+                    "delay_days": step.get('delay_days', 0),
+                    "delay_hours": step.get('delay_hours', 0),
+                    "send_time": step.get('send_time'),
+                    "business_hours_only": step.get('business_hours_only', True),
+                    "condition_type": step.get('condition_type'),
+                    "condition_config": step.get('condition_config', {}),
+                    "action_type": step.get('action_type'),
+                    "action_config": step.get('action_config', {})
+                }
+                new_steps.append(new_step)
+            
+            supabase_service.client.table('sequence_steps').insert(new_steps).execute()
+        
+        # Get the complete new sequence
+        result = supabase_service.client.table('sequences').select('*').eq('id', new_sequence_id).execute()
+        
+        logger.info(f"✅ Sequence duplicated: {new_sequence_id}")
+        return result.data[0]
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error duplicating sequence: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/sequences/{sequence_id}/enrollments")
+async def get_sequence_enrollments(
+    sequence_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get all enrollments for a sequence"""
+    try:
+        result = supabase_service.client.table('sequence_enrollments').select('*').eq('sequence_id', sequence_id).eq('tenant_id', current_user['tenant_id']).execute()
+        
+        return result.data
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting enrollments: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/sequences/{sequence_id}/execution-stats")
+async def get_sequence_execution_stats(
+    sequence_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get real-time execution statistics for a sequence"""
+    try:
+        # Get sequence info
+        sequence = supabase_service.client.table('sequences').select('*').eq('id', sequence_id).eq('tenant_id', current_user['tenant_id']).single().execute()
+        
+        # Get enrollment stats
+        enrollments = supabase_service.client.table('sequence_enrollments').select('id, status, current_step, exit_reason').eq('sequence_id', sequence_id).eq('tenant_id', current_user['tenant_id']).execute()
+        
+        # Get step execution stats (last 20)
+        executions = supabase_service.client.table('sequence_step_executions').select('*, sequence_steps(name, step_type)').eq('tenant_id', current_user['tenant_id']).order('executed_at', desc=True).limit(20).execute()
+        
+        logger.info(f"📊 Raw executions count: {len(executions.data)}")
+        logger.info(f"📊 First execution sample: {executions.data[0] if executions.data else 'None'}")
+        
+        # Filter executions for this sequence by joining with enrollments
+        enrollment_ids = [e['id'] for e in enrollments.data]
+        sequence_executions = [e for e in executions.data if e.get('enrollment_id') in enrollment_ids]
+        
+        logger.info(f"📊 Filtered sequence_executions count: {len(sequence_executions)}")
+        
+        # Calculate stats
+        total_enrolled = len(enrollments.data)
+        active = len([e for e in enrollments.data if e['status'] == 'active'])
+        scheduled = len([e for e in enrollments.data if e['status'] == 'scheduled'])
+        completed = len([e for e in enrollments.data if e['status'] == 'completed'])
+        failed = len([e for e in enrollments.data if e['status'] == 'failed'])
+        
+        # Calculate by step
+        step_distribution = {}
+        for e in enrollments.data:
+            step = e.get('current_step', 0)
+            step_distribution[step] = step_distribution.get(step, 0) + 1
+        
+        # Recent sends (last 20)
+        recent_sends = []
+        for exec in sequence_executions[:20]:
+            recent_sends.append({
+                'executed_at': exec.get('executed_at'),
+                'status': exec.get('status'),
+                'step_name': exec.get('sequence_steps', {}).get('name', 'Unknown'),
+                'step_type': exec.get('sequence_steps', {}).get('step_type', 'unknown'),
+                'email_sent': exec.get('email_sent', False),
+                'error_message': exec.get('error_message')
+            })
+        
+        return {
+            'sequence': {
+                'id': sequence.data['id'],
+                'name': sequence.data['name'],
+                'status': sequence.data['status'],
+                'steps_count': sequence.data.get('steps_count', 0)
+            },
+            'stats': {
+                'total_enrolled': total_enrolled,
+                'active': active,
+                'scheduled': scheduled,
+                'completed': completed,
+                'failed': failed,
+                'step_distribution': step_distribution
+            },
+            'recent_activity': recent_sends,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting execution stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/sequences/{sequence_id}/activate")
+async def activate_sequence(
+    sequence_id: str,
+    request: dict,
+    current_user: dict = Depends(get_current_user)
+):
+    """Activate a sequence with optional scheduling"""
+    try:
+        scheduled_start_at = request.get('scheduled_start_at')
+        
+        logger.info(f"🚀 Activating sequence: {sequence_id} (scheduled: {scheduled_start_at})")
+        
+        # Verify sequence exists and belongs to tenant
+        sequence = supabase_service.client.table('sequences').select('*').eq('id', sequence_id).eq('tenant_id', current_user['tenant_id']).execute()
+        
+        if not sequence.data:
+            raise HTTPException(status_code=404, detail="Sequence not found")
+        
+        # Update sequence status to active
+        update_data = {
+            'status': 'active',
+            'updated_at': datetime.now().isoformat()
+        }
+        
+        if scheduled_start_at:
+            update_data['scheduled_start_at'] = scheduled_start_at
+        
+        supabase_service.client.table('sequences').update(update_data).eq('id', sequence_id).execute()
+        
+        # Get all enrolled leads
+        enrollments = supabase_service.client.table('sequence_enrollments').select('*').eq('sequence_id', sequence_id).eq('tenant_id', current_user['tenant_id']).execute()
+        
+        # Update enrollments based on scheduling
+        enrollment_count = 0
+        for enrollment in enrollments.data:
+            enrollment_update = {
+                'current_step': 1
+            }
+            
+            if scheduled_start_at:
+                # Schedule for future
+                enrollment_update['status'] = 'scheduled'
+                enrollment_update['next_action_at'] = scheduled_start_at
+                enrollment_update['scheduled_start_at'] = scheduled_start_at
+            else:
+                # Start immediately
+                enrollment_update['status'] = 'active'
+                enrollment_update['next_action_at'] = datetime.now().isoformat()
+                enrollment_update['started_at'] = datetime.now().isoformat()
+            
+            supabase_service.client.table('sequence_enrollments').update(enrollment_update).eq('id', enrollment['id']).execute()
+            enrollment_count += 1
+        
+        status_message = "scheduled" if scheduled_start_at else "activated"
+        logger.info(f"✅ Sequence {status_message} with {enrollment_count} leads")
+        
+        return {
+            "success": True,
+            "message": f"Sequence {status_message} successfully",
+            "sequence_id": sequence_id,
+            "enrolled_leads": enrollment_count,
+            "scheduled_start_at": scheduled_start_at
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error activating sequence: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Sequence Steps Endpoints
+
+@app.get("/sequences/{sequence_id}/steps", response_model=List[SequenceStepResponse])
+async def get_sequence_steps(
+    sequence_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get all steps for a sequence"""
+    try:
+        logger.info(f"📋 Getting steps for sequence: {sequence_id}")
+        
+        # Verify sequence exists
+        sequence = supabase_service.client.table('sequences').select('id').eq('id', sequence_id).eq('tenant_id', current_user['tenant_id']).execute()
+        
+        if not sequence.data:
+            raise HTTPException(status_code=404, detail="Sequence not found")
+        
+        # Get steps
+        result = supabase_service.client.table('sequence_steps').select('*').eq('sequence_id', sequence_id).order('step_order').execute()
+        
+        logger.info(f"✅ Found {len(result.data)} steps")
+        
+        # Convert to JSON-serializable format
+        steps = []
+        for step in result.data:
+            steps.append({
+                'id': str(step['id']),
+                'sequence_id': str(step['sequence_id']),
+                'step_order': step['step_order'],
+                'name': step['name'],
+                'step_type': step['step_type'],
+                'subject_line': step.get('subject_line'),
+                'body_text': step.get('body_text'),
+                'delay_days': step.get('delay_days', 0),
+                'delay_hours': step.get('delay_hours', 0),
+                'condition_type': step.get('condition_type'),
+                'action_type': step.get('action_type'),
+                'created_at': str(step['created_at']) if step.get('created_at') else None
+            })
+        
+        return steps
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error getting sequence steps: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/sequences/{sequence_id}/steps", response_model=SequenceStepResponse)
+async def create_sequence_step(
+    sequence_id: str,
+    step: SequenceStepCreate,
+    current_user: dict = Depends(get_current_user)
+):
+    """Add a step to a sequence"""
+    try:
+        logger.info(f"➕ Adding step to sequence: {sequence_id}")
+        
+        # Verify sequence exists
+        sequence = supabase_service.client.table('sequences').select('*').eq('id', sequence_id).eq('tenant_id', current_user['tenant_id']).execute()
+        
+        if not sequence.data:
+            raise HTTPException(status_code=404, detail="Sequence not found")
+        
+        # Cannot modify active sequences
+        if sequence.data[0]['status'] == 'active':
+            raise HTTPException(status_code=400, detail="Cannot modify active sequence. Pause it first.")
+        
+        step_data = {
+            "tenant_id": current_user['tenant_id'],
+            "sequence_id": sequence_id,
+            "step_order": step.step_order,
+            "name": step.name,
+            "step_type": step.step_type,
+            "subject_line": step.subject_line,
+            "body_text": step.body_text,
+            "body_html": step.body_html,
+            "delay_days": step.delay_days,
+            "delay_hours": step.delay_hours,
+            "send_time": step.send_time,
+            "business_hours_only": step.business_hours_only,
+            "condition_type": step.condition_type,
+            "condition_config": step.condition_config,
+            "action_type": step.action_type,
+            "action_config": step.action_config
+        }
+        
+        result = supabase_service.client.table('sequence_steps').insert(step_data).execute()
+        
+        logger.info(f"✅ Step added: {result.data[0]['id']}")
+        return result.data[0]
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error creating sequence step: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/sequences/{sequence_id}/steps/{step_id}", response_model=SequenceStepResponse)
+async def update_sequence_step(
+    sequence_id: str,
+    step_id: str,
+    step: SequenceStepCreate,
+    current_user: dict = Depends(get_current_user)
+):
+    """Update a sequence step"""
+    try:
+        logger.info(f"✏️ Updating step: {step_id}")
+        
+        # Verify sequence exists
+        sequence = supabase_service.client.table('sequences').select('*').eq('id', sequence_id).eq('tenant_id', current_user['tenant_id']).execute()
+        
+        if not sequence.data:
+            raise HTTPException(status_code=404, detail="Sequence not found")
+        
+        if sequence.data[0]['status'] == 'active':
+            raise HTTPException(status_code=400, detail="Cannot modify active sequence")
+        
+        # Update step
+        update_data = {
+            "name": step.name,
+            "step_type": step.step_type,
+            "subject_line": step.subject_line,
+            "body_text": step.body_text,
+            "body_html": step.body_html,
+            "delay_days": step.delay_days,
+            "delay_hours": step.delay_hours,
+            "send_time": step.send_time,
+            "business_hours_only": step.business_hours_only,
+            "condition_type": step.condition_type,
+            "condition_config": step.condition_config,
+            "action_type": step.action_type,
+            "action_config": step.action_config,
+            "updated_at": datetime.now().isoformat()
+        }
+        
+        result = supabase_service.client.table('sequence_steps').update(update_data).eq('id', step_id).eq('sequence_id', sequence_id).execute()
+        
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Step not found")
+        
+        logger.info(f"✅ Step updated")
+        return result.data[0]
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error updating sequence step: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/sequences/{sequence_id}/steps/{step_id}")
+async def delete_sequence_step(
+    sequence_id: str,
+    step_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Delete a sequence step"""
+    try:
+        logger.info(f"🗑️ Deleting step: {step_id}")
+        
+        # Verify sequence exists
+        sequence = supabase_service.client.table('sequences').select('*').eq('id', sequence_id).eq('tenant_id', current_user['tenant_id']).execute()
+        
+        if not sequence.data:
+            raise HTTPException(status_code=404, detail="Sequence not found")
+        
+        if sequence.data[0]['status'] == 'active':
+            raise HTTPException(status_code=400, detail="Cannot modify active sequence")
+        
+        # Delete step
+        supabase_service.client.table('sequence_steps').delete().eq('id', step_id).eq('sequence_id', sequence_id).execute()
+        
+        logger.info(f"✅ Step deleted")
+        return {"success": True, "message": "Step deleted"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error deleting sequence step: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Sequence Assignment & Enrollment
+
+class EnrollLeadsRequest(BaseModel):
+    lead_ids: List[str]
+    sequence_id: str
+    campaign_id: Optional[str] = None
+
+@app.post("/campaigns/{campaign_id}/assign-sequence")
+async def assign_sequence_to_campaign(
+    campaign_id: str,
+    sequence_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Assign a sequence to a campaign and enroll all leads"""
+    try:
+        logger.info(f"🔗 Assigning sequence {sequence_id} to campaign {campaign_id}")
+        
+        # Verify campaign and sequence exist
+        campaign = supabase_service.client.table('campaigns').select('*').eq('id', campaign_id).eq('tenant_id', current_user['tenant_id']).execute()
+        sequence = supabase_service.client.table('sequences').select('*').eq('id', sequence_id).eq('tenant_id', current_user['tenant_id']).execute()
+        
+        if not campaign.data:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        if not sequence.data:
+            raise HTTPException(status_code=404, detail="Sequence not found")
+        
+        # Get all leads in campaign
+        leads = supabase_service.client.table('leads').select('id').eq('campaign_id', campaign_id).eq('tenant_id', current_user['tenant_id']).execute()
+        
+        if not leads.data:
+            return {"success": True, "enrolled": 0, "message": "No leads to enroll"}
+        
+        # Enroll each lead
+        enrolled_count = 0
+        for lead in leads.data:
+            try:
+                # Call the database function to enroll lead
+                result = supabase_service.client.rpc('enroll_lead_in_sequence', {
+                    'p_tenant_id': current_user['tenant_id'],
+                    'p_lead_id': lead['id'],
+                    'p_campaign_id': campaign_id,
+                    'p_sequence_id': sequence_id
+                }).execute()
+                
+                enrolled_count += 1
+            except Exception as e:
+                logger.warning(f"Failed to enroll lead {lead['id']}: {e}")
+        
+        logger.info(f"✅ Enrolled {enrolled_count} leads in sequence")
+        return {
+            "success": True,
+            "enrolled": enrolled_count,
+            "total_leads": len(leads.data),
+            "message": f"Enrolled {enrolled_count} leads in sequence"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error assigning sequence to campaign: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/campaigns/{campaign_id}/create-sequence")
+async def create_sequence_from_campaign(
+    campaign_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Create a pre-filled sequence from a campaign with template steps and auto-enrolled leads"""
+    try:
+        logger.info(f"🎯 Creating sequence from campaign {campaign_id}")
+        
+        # Get campaign details
+        campaign = supabase_service.client.table('campaigns').select('*').eq('id', campaign_id).eq('tenant_id', current_user['tenant_id']).execute()
+        
+        if not campaign.data:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        
+        campaign_data = campaign.data[0]
+        
+        # Extract campaign settings
+        settings = campaign_data.get('settings', {})
+        target_audience = settings.get('target_audience', campaign_data.get('description', 'your industry'))
+        value_proposition = settings.get('value_proposition', 'We help companies like yours achieve better results.')
+        call_to_action = settings.get('call_to_action', 'Would you be open to a quick 15-minute call to discuss?')
+        
+        # Get campaign leads for context
+        leads = supabase_service.client.table('leads').select('*').eq('campaign_id', campaign_id).eq('tenant_id', current_user['tenant_id']).limit(5).execute()
+        
+        # Create sequence
+        sequence_name = f"{campaign_data['name']} - Follow-up Sequence"
+        sequence_description = f"Automated multi-touch sequence for {campaign_data['name']} campaign"
+        
+        sequence = supabase_service.client.table('sequences').insert({
+            'tenant_id': current_user['tenant_id'],
+            'user_id': current_user['user_id'],
+            'name': sequence_name,
+            'description': sequence_description,
+            'status': 'draft',
+            'campaign_id': campaign_id
+        }).execute()
+        
+        if not sequence.data:
+            raise HTTPException(status_code=500, detail="Failed to create sequence")
+        
+        sequence_id = sequence.data[0]['id']
+        logger.info(f"✅ Created sequence {sequence_id}")
+        
+        # Create template steps
+        template_steps = [
+            {
+                'tenant_id': current_user['tenant_id'],
+                'sequence_id': sequence_id,
+                'step_order': 1,
+                'step_type': 'email',
+                'name': 'Initial Outreach',
+                'subject_line': f"Quick question about {{{{company}}}}'s {target_audience}",
+                'body_text': f"""Hi {{{{name}}}},
+
+I noticed {{{{company}}}} is working in {target_audience} and thought this might be relevant.
+
+{value_proposition}
+
+{call_to_action}
+
+Best regards,
+{{{{sender_name}}}}""",
+                'delay_days': 0,
+                'delay_hours': 0
+            },
+            {
+                'tenant_id': current_user['tenant_id'],
+                'sequence_id': sequence_id,
+                'step_order': 2,
+                'step_type': 'delay',
+                'name': 'Wait 2 Days',
+                'delay_days': 2,
+                'delay_hours': 0
+            },
+            {
+                'tenant_id': current_user['tenant_id'],
+                'sequence_id': sequence_id,
+                'step_order': 3,
+                'step_type': 'condition',
+                'name': 'Check if Replied',
+                'condition_type': 'if_not_replied'
+            },
+            {
+                'tenant_id': current_user['tenant_id'],
+                'sequence_id': sequence_id,
+                'step_order': 4,
+                'step_type': 'email',
+                'name': 'Follow-up #1',
+                'subject_line': 'Re: Quick question about {{company}}',
+                'body_text': f"""Hi {{{{name}}}},
+
+Just wanted to follow up on my previous email about {target_audience}.
+
+I understand you're busy, but I genuinely think {{{{company}}}} could benefit from what we offer:
+
+{value_proposition}
+
+Would next Tuesday or Wednesday work for a brief call?
+
+Best,
+{{{{sender_name}}}}""",
+                'delay_days': 0,
+                'delay_hours': 0
+            },
+            {
+                'tenant_id': current_user['tenant_id'],
+                'sequence_id': sequence_id,
+                'step_order': 5,
+                'step_type': 'delay',
+                'name': 'Wait 3 Days',
+                'delay_days': 3,
+                'delay_hours': 0
+            },
+            {
+                'tenant_id': current_user['tenant_id'],
+                'sequence_id': sequence_id,
+                'step_order': 6,
+                'step_type': 'condition',
+                'name': 'Check if Replied',
+                'condition_type': 'if_not_replied'
+            },
+            {
+                'tenant_id': current_user['tenant_id'],
+                'sequence_id': sequence_id,
+                'step_order': 7,
+                'step_type': 'email',
+                'name': 'Final Follow-up',
+                'subject_line': 'Last follow-up - {{company}}',
+                'body_text': f"""Hi {{{{name}}}},
+
+This will be my last follow-up. I don't want to be a bother, but I wanted to give it one more shot.
+
+Many companies in {target_audience} have found value in what we offer.
+
+{call_to_action}
+
+If now's not the right time, no worries at all.
+
+Best of luck!
+{{{{sender_name}}}}""",
+                'delay_days': 0,
+                'delay_hours': 0
+            }
+        ]
+        
+        # Insert all steps
+        steps_result = supabase_service.client.table('sequence_steps').insert(template_steps).execute()
+        
+        if not steps_result.data:
+            logger.warning("⚠️ Failed to create template steps, but sequence was created")
+        else:
+            logger.info(f"✅ Created {len(steps_result.data)} template steps")
+        
+        # Enroll all campaign leads
+        all_leads = supabase_service.client.table('leads').select('id').eq('campaign_id', campaign_id).eq('tenant_id', current_user['tenant_id']).execute()
+        
+        enrolled_count = 0
+        if all_leads.data:
+            for lead in all_leads.data:
+                try:
+                    result = supabase_service.client.rpc('enroll_lead_in_sequence', {
+                        'p_tenant_id': current_user['tenant_id'],
+                        'p_lead_id': lead['id'],
+                        'p_campaign_id': campaign_id,
+                        'p_sequence_id': sequence_id
+                    }).execute()
+                    enrolled_count += 1
+                except Exception as e:
+                    logger.warning(f"Failed to enroll lead {lead['id']}: {e}")
+        
+        logger.info(f"✅ Enrolled {enrolled_count} leads in new sequence")
+        
+        return {
+            "sequence_id": sequence_id,
+            "name": sequence_name,
+            "steps_created": len(template_steps),
+            "leads_enrolled": enrolled_count,
+            "message": f"Sequence created with {len(template_steps)} steps and {enrolled_count} leads enrolled"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error creating sequence from campaign: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/leads/enroll-in-sequence")
+async def enroll_leads_in_sequence(
+    request: EnrollLeadsRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """Enroll specific leads in a sequence"""
+    try:
+        logger.info(f"📝 Enrolling {len(request.lead_ids)} leads in sequence {request.sequence_id}")
+        
+        # Verify sequence exists
+        sequence = supabase_service.client.table('sequences').select('*').eq('id', request.sequence_id).eq('tenant_id', current_user['tenant_id']).execute()
+        
+        if not sequence.data:
+            raise HTTPException(status_code=404, detail="Sequence not found")
+        
+        enrolled_count = 0
+        failed_leads = []
+        
+        for lead_id in request.lead_ids:
+            try:
+                # Verify lead exists and belongs to tenant
+                lead = supabase_service.client.table('leads').select('*').eq('id', lead_id).eq('tenant_id', current_user['tenant_id']).execute()
+                
+                if not lead.data:
+                    failed_leads.append({"lead_id": lead_id, "reason": "Lead not found"})
+                    continue
+                
+                # Enroll lead
+                result = supabase_service.client.rpc('enroll_lead_in_sequence', {
+                    'p_tenant_id': current_user['tenant_id'],
+                    'p_lead_id': lead_id,
+                    'p_campaign_id': request.campaign_id or lead.data[0].get('campaign_id'),
+                    'p_sequence_id': request.sequence_id
+                }).execute()
+                
+                enrolled_count += 1
+            except Exception as e:
+                failed_leads.append({"lead_id": lead_id, "reason": str(e)})
+        
+        logger.info(f"✅ Enrolled {enrolled_count}/{len(request.lead_ids)} leads")
+        return {
+            "success": True,
+            "enrolled": enrolled_count,
+            "failed": len(failed_leads),
+            "failed_leads": failed_leads
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error enrolling leads: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/leads/{lead_id}/sequence-state")
+async def get_lead_sequence_state(
+    lead_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get a lead's current sequence state"""
+    try:
+        logger.info(f"🔍 Getting sequence state for lead {lead_id}")
+        
+        result = supabase_service.client.table('lead_sequence_state').select('*').eq('lead_id', lead_id).eq('tenant_id', current_user['tenant_id']).execute()
+        
+        if not result.data:
+            return {"sequences": []}
+        
+        return {"sequences": result.data}
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting lead sequence state: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/leads/{lead_id}/pause-sequence")
+async def pause_lead_sequence(
+    lead_id: str,
+    sequence_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Pause a lead's sequence"""
+    try:
+        logger.info(f"⏸️ Pausing sequence for lead {lead_id}")
+        
+        result = supabase_service.client.table('lead_sequence_state').update({
+            "status": "paused",
+            "updated_at": datetime.now().isoformat()
+        }).eq('lead_id', lead_id).eq('sequence_id', sequence_id).eq('tenant_id', current_user['tenant_id']).execute()
+        
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Lead sequence state not found")
+        
+        logger.info(f"✅ Sequence paused")
+        return {"success": True, "message": "Sequence paused"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error pausing sequence: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/leads/{lead_id}/resume-sequence")
+async def resume_lead_sequence(
+    lead_id: str,
+    sequence_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Resume a paused sequence"""
+    try:
+        logger.info(f"▶️ Resuming sequence for lead {lead_id}")
+        
+        result = supabase_service.client.table('lead_sequence_state').update({
+            "status": "active",
+            "updated_at": datetime.now().isoformat()
+        }).eq('lead_id', lead_id).eq('sequence_id', sequence_id).eq('tenant_id', current_user['tenant_id']).execute()
+        
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Lead sequence state not found")
+        
+        logger.info(f"✅ Sequence resumed")
+        return {"success": True, "message": "Sequence resumed"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error resuming sequence: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/leads/{lead_id}/stop-sequence")
+async def stop_lead_sequence(
+    lead_id: str,
+    sequence_id: str,
+    reason: str = "Manual stop",
+    current_user: dict = Depends(get_current_user)
+):
+    """Stop a lead's sequence"""
+    try:
+        logger.info(f"🛑 Stopping sequence for lead {lead_id}")
+        
+        # Get the state ID
+        state = supabase_service.client.table('lead_sequence_state').select('id').eq('lead_id', lead_id).eq('sequence_id', sequence_id).eq('tenant_id', current_user['tenant_id']).execute()
+        
+        if not state.data:
+            raise HTTPException(status_code=404, detail="Lead sequence state not found")
+        
+        # Call stop function
+        result = supabase_service.client.rpc('stop_lead_sequence', {
+            'p_state_id': state.data[0]['id'],
+            'p_reason': reason
+        }).execute()
+        
+        logger.info(f"✅ Sequence stopped")
+        return {"success": True, "message": "Sequence stopped"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error stopping sequence: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Sequence Execution & Scheduler
+
+@app.get("/sequences/{sequence_id}/analytics")
+async def get_sequence_analytics(
+    sequence_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get analytics for a sequence"""
+    try:
+        logger.info(f"📊 Getting analytics for sequence {sequence_id}")
+        
+        # Get from materialized view
+        result = supabase_service.client.table('sequence_performance_summary').select('*').eq('sequence_id', sequence_id).eq('tenant_id', current_user['tenant_id']).execute()
+        
+        if not result.data:
+            # Return empty analytics if not found
+            return {
+                "sequence_id": sequence_id,
+                "current_leads": 0,
+                "active_leads": 0,
+                "completed_leads": 0,
+                "total_emails_sent": 0,
+                "open_rate": 0,
+                "reply_rate": 0,
+                "completion_rate": 0
+            }
+        
+        return result.data[0]
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting sequence analytics: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/sequences/process-queue")
+async def process_sequence_queue(background_tasks: BackgroundTasks):
+    """Process pending sequence actions (cron job endpoint)"""
+    try:
+        logger.info(f"⚙️ Processing sequence queue...")
+        
+        # Get all active lead sequences that are due
+        now = datetime.now().isoformat()
+        
+        pending = supabase_service.client.table('lead_sequence_state').select(
+            '*, leads(name, email), sequences(name), sequence_steps(id, step_type, step_order, subject_line, body_text, delay_days, delay_hours)'
+        ).eq('status', 'active').lte('next_action_at', now).limit(100).execute()
+        
+        if not pending.data:
+            logger.info(f"✅ No pending actions")
+            return {"success": True, "processed": 0, "message": "No pending actions"}
+        
+        processed = 0
+        errors = []
+        
+        for state in pending.data:
+            try:
+                # Process this lead's next step
+                await execute_sequence_step(state)
+                processed += 1
+            except Exception as e:
+                errors.append({"lead_id": state['lead_id'], "error": str(e)})
+                logger.error(f"Error processing lead {state['lead_id']}: {e}")
+        
+        logger.info(f"✅ Processed {processed} sequence actions")
+        return {
+            "success": True,
+            "processed": processed,
+            "errors": len(errors),
+            "error_details": errors
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error processing sequence queue: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def execute_sequence_step(state: dict):
+    """Execute a single sequence step for a lead"""
+    try:
+        step = state.get('sequence_steps')
+        if not step:
+            logger.warning(f"No step found for state {state['id']}")
+            return
+        
+        lead = state.get('leads')
+        sequence = state.get('sequences')
+        
+        logger.info(f"🎬 Executing step {step['step_order']} for lead {lead.get('name', 'Unknown')}")
+        
+        # Handle different step types
+        if step['step_type'] == 'email':
+            await send_sequence_email(state, step, lead)
+        elif step['step_type'] == 'delay':
+            await process_delay_step(state, step)
+        elif step['step_type'] == 'condition':
+            await evaluate_condition_step(state, step, lead)
+        elif step['step_type'] == 'action':
+            await execute_action_step(state, step, lead)
+        
+        # Log execution
+        supabase_service.client.table('sequence_execution_log').insert({
+            "tenant_id": state['tenant_id'],
+            "lead_id": state['lead_id'],
+            "sequence_id": state['sequence_id'],
+            "step_id": step['id'],
+            "action_type": 'step_completed',
+            "action_result": 'success',
+            "step_order": step['step_order'],
+            "step_name": step.get('name', f"Step {step['step_order']}")
+        }).execute()
+        
+        # Advance to next step
+        supabase_service.client.rpc('advance_to_next_step', {
+            'p_state_id': state['id'],
+            'p_skip_current': False
+        }).execute()
+        
+    except Exception as e:
+        logger.error(f"❌ Error executing step: {e}")
+        # Log error
+        supabase_service.client.table('sequence_execution_log').insert({
+            "tenant_id": state['tenant_id'],
+            "lead_id": state['lead_id'],
+            "sequence_id": state['sequence_id'],
+            "step_id": step.get('id'),
+            "action_type": 'error_occurred',
+            "action_result": 'failed',
+            "error_message": str(e)
+        }).execute()
+        raise
+
+async def send_sequence_email(state: dict, step: dict, lead: dict):
+    """Send an email as part of a sequence"""
+    try:
+        logger.info(f"📧 Sending email: {step.get('subject_line')}")
+        
+        # TODO: Integrate with actual email service
+        # For now, just log and update metrics
+        
+        # Update lead sequence state
+        supabase_service.client.table('lead_sequence_state').update({
+            "emails_sent": state.get('emails_sent', 0) + 1,
+            "updated_at": datetime.now().isoformat()
+        }).eq('id', state['id']).execute()
+        
+        # Track engagement
+        supabase_service.client.table('lead_engagement').insert({
+            "tenant_id": state['tenant_id'],
+            "lead_id": state['lead_id'],
+            "campaign_id": state.get('campaign_id'),
+            "event_type": "email_sent",
+            "event_data": {
+                "sequence_id": state['sequence_id'],
+                "step_id": step['id'],
+                "subject": step.get('subject_line')
+            }
+        }).execute()
+        
+        logger.info(f"✅ Email sent")
+        
+    except Exception as e:
+        logger.error(f"❌ Error sending email: {e}")
+        raise
+
+async def process_delay_step(state: dict, step: dict):
+    """Process a delay step"""
+    # Delay steps are handled by the advance_to_next_step function
+    # which calculates the next_action_at based on delay_days/delay_hours
+    pass
+
+async def evaluate_condition_step(state: dict, step: dict, lead: dict):
+    """Evaluate a conditional step"""
+    try:
+        condition_type = step.get('condition_type')
+        logger.info(f"🔀 Evaluating condition: {condition_type}")
+        
+        condition_met = False
+        
+        if condition_type == 'if_replied':
+            # Check if lead has replied
+            replied = state.get('replied_at') is not None
+            condition_met = replied
+        
+        elif condition_type == 'if_opened':
+            # Check if lead opened recent email
+            opens = state.get('emails_opened', 0)
+            condition_met = opens > 0
+        
+        elif condition_type == 'if_clicked':
+            # Check if lead clicked links
+            clicks = state.get('emails_clicked', 0)
+            condition_met = clicks > 0
+        
+        elif condition_type == 'if_not_replied':
+            replied = state.get('replied_at') is not None
+            condition_met = not replied
+        
+        # If condition met and lead replied, stop sequence
+        if condition_type == 'if_replied' and condition_met:
+            supabase_service.client.rpc('stop_lead_sequence', {
+                'p_state_id': state['id'],
+                'p_reason': 'Lead replied'
+            }).execute()
+        
+        logger.info(f"✅ Condition result: {condition_met}")
+        
+    except Exception as e:
+        logger.error(f"❌ Error evaluating condition: {e}")
+        raise
+
+async def execute_action_step(state: dict, step: dict, lead: dict):
+    """Execute an action step"""
+    try:
+        action_type = step.get('action_type')
+        logger.info(f"⚡ Executing action: {action_type}")
+        
+        if action_type == 'update_status':
+            # Update lead status
+            new_status = step.get('action_config', {}).get('status', 'contacted')
+            supabase_service.client.table('leads').update({
+                "status": new_status,
+                "updated_at": datetime.now().isoformat()
+            }).eq('id', state['lead_id']).execute()
+        
+        elif action_type == 'mark_qualified':
+            supabase_service.client.table('leads').update({
+                "status": "qualified",
+                "updated_at": datetime.now().isoformat()
+            }).eq('id', state['lead_id']).execute()
+        
+        logger.info(f"✅ Action executed")
+        
+    except Exception as e:
+        logger.error(f"❌ Error executing action: {e}")
+        raise
 
 if __name__ == "__main__":
     import uvicorn

@@ -1,0 +1,7 @@
+Name,Company,Title,Email,Phone,LinkedIn URL,Industry,Company Size,Location
+Zoe Capital,Avius LLC,CEO,avcapers@gmail.com,(555) 123-4567,https://linkedin.com/in/zoecapital,Technology,1-10,San Francisco
+John Smith,TechCorp Inc,CTO,john.smith@techcorp.com,(555) 234-5678,https://linkedin.com/in/johnsmith,Software,50-200,New York
+Sarah Johnson,DataFlow Systems,VP Engineering,sarah.j@dataflow.io,(555) 345-6789,https://linkedin.com/in/sarahjohnson,Data Analytics,200-500,Austin
+Michael Chen,CloudScale,Head of Product,michael.chen@cloudscale.com,(555) 456-7890,https://linkedin.com/in/michaelchen,Cloud Computing,500-1000,Seattle
+Emily Davis,AI Innovations,Director of AI,emily.davis@aiinnovations.com,(555) 567-8901,https://linkedin.com/in/emilydavis,Artificial Intelligence,100-500,Boston
+

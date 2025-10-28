@@ -23,6 +23,7 @@ class GoogleOAuthService:
         self.client_id = os.getenv("GOOGLE_CLIENT_ID")
         self.client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
         self.redirect_uri = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:3000/auth/google/callback")
+        self.token_uri = "https://oauth2.googleapis.com/token"  # Google's token endpoint
         
         # Scopes for Gmail and Google Sheets
         self.scopes = [
@@ -122,20 +123,36 @@ class GoogleOAuthService:
             "expires_at": credentials.expiry.isoformat() if credentials.expiry else None
         }
     
-    def get_gmail_service(self, access_token: str):
-        """Get Gmail service instance"""
-        credentials = Credentials(token=access_token)
+    def get_gmail_service(self, access_token: str, refresh_token: str = None):
+        """Get Gmail service instance with full OAuth credentials"""
+        # Create credentials with refresh capability
+        credentials = Credentials(
+            token=access_token,
+            refresh_token=refresh_token,
+            token_uri=self.token_uri,
+            client_id=self.client_id,
+            client_secret=self.client_secret,
+            scopes=self.scopes
+        )
         return build('gmail', 'v1', credentials=credentials)
     
-    def get_sheets_service(self, access_token: str):
-        """Get Google Sheets service instance"""
-        credentials = Credentials(token=access_token)
+    def get_sheets_service(self, access_token: str, refresh_token: str = None):
+        """Get Google Sheets service instance with full OAuth credentials"""
+        # Create credentials with refresh capability
+        credentials = Credentials(
+            token=access_token,
+            refresh_token=refresh_token,
+            token_uri=self.token_uri,
+            client_id=self.client_id,
+            client_secret=self.client_secret,
+            scopes=self.scopes
+        )
         return gspread.authorize(credentials)
     
-    def send_email_via_gmail(self, access_token: str, to_email: str, subject: str, body: str, from_email: str = None) -> Dict[str, Any]:
+    def send_email_via_gmail(self, access_token: str, to_email: str, subject: str, body: str, from_email: str = None, refresh_token: str = None) -> Dict[str, Any]:
         """Send email using Gmail API"""
         try:
-            service = self.get_gmail_service(access_token)
+            service = self.get_gmail_service(access_token, refresh_token)
             
             # Get user's email address
             if not from_email:
@@ -304,43 +321,6 @@ class GoogleOAuthService:
                 "error": str(e)
             }
 
-    def send_email_via_gmail(self, access_token: str, to_email: str, subject: str, body: str, from_email: str = None) -> Dict[str, Any]:
-        """Send email via Gmail API with custom from_email"""
-        try:
-            service = self.get_gmail_service(access_token)
-            
-            # Get user's email if not provided
-            if not from_email:
-                profile = service.users().getProfile(userId='me').execute()
-                from_email = profile['emailAddress']
-            
-            message = MIMEMultipart()
-            message['to'] = to_email
-            message['from'] = from_email
-            message['subject'] = subject
-            message.attach(MIMEText(body, 'plain'))
-            
-            raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
-            
-            send_message = (service.users().messages().send(
-                userId='me', 
-                body={'raw': raw_message}
-            ).execute())
-            
-            logger.info(f"Gmail API message sent. Message Id: {send_message['id']}")
-            return {
-                "success": True, 
-                "message_id": send_message['id'],
-                "sent_at": datetime.now().isoformat(),
-                "from_email": from_email,
-                "to_email": to_email
-            }
-        except HttpError as error:
-            logger.error(f"An error occurred sending Gmail message: {error}")
-            return {"success": False, "error": str(error)}
-        except Exception as e:
-            logger.error(f"An unexpected error occurred sending Gmail message: {e}")
-            return {"success": False, "error": str(e)}
 
     def list_user_sheets(self, access_token: str) -> List[Dict[str, Any]]:
         """List user's Google Sheets, excluding campaign-generated sheets"""

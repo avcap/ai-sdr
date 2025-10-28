@@ -742,3 +742,7 @@ class SupabaseService:
             logger.error(f"Error deleting Google tokens: {e}")
             return False
 
+
+# Create module-level instance (will be used by sequence_execution_service)
+supabase_service = SupabaseService()
+

@@ -10,6 +10,7 @@ import SmartCampaign from '../components/SmartCampaign';
 import CopywriterAgent from '../components/CopywriterAgent';
 import SmartOutreachAgent from '../components/SmartOutreachAgent';
 import TrainYourTeam from '../components/TrainYourTeam';
+import OutreachStrategyModal from '../components/OutreachStrategyModal';
 
 export default function Dashboard() {
   const { data: session, status } = useSession();
@@ -34,6 +35,8 @@ export default function Dashboard() {
   const [showQuickOutreach, setShowQuickOutreach] = useState(false);
   const [quickOutreachFile, setQuickOutreachFile] = useState(null);
   const [quickOutreachLoading, setQuickOutreachLoading] = useState(false);
+  const [showOutreachStrategy, setShowOutreachStrategy] = useState(false);
+  const [completedCampaignData, setCompletedCampaignData] = useState(null);
 
   useEffect(() => {
     if (status === 'loading') return;
@@ -132,7 +135,7 @@ export default function Dashboard() {
     
     try {
       const response = await fetch('/api/auth/google/disconnect', {
-        method: 'POST',
+        method: 'DELETE',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${session?.accessToken || 'demo_token'}`
@@ -170,6 +173,9 @@ export default function Dashboard() {
 
   const handleCampaignCreated = (campaignData) => {
     console.log('Campaign created:', campaignData);
+    setCompletedCampaignData(campaignData);
+    setShowSmartCampaign(false); // Close Smart Campaign modal
+    setShowOutreachStrategy(true); // Show strategy selection modal
     fetchData(); // Refresh campaigns list
   };
 
@@ -446,6 +452,13 @@ export default function Dashboard() {
                   <span>Knowledge Bank</span>
                 </button>
                 <button
+                  onClick={() => router.push('/sequences')}
+                  className="bg-gradient-to-r from-yellow-600 to-amber-600 text-white px-6 py-2 rounded-lg hover:from-yellow-700 hover:to-amber-700 transition-all transform hover:scale-105 shadow-lg flex items-center space-x-2"
+                >
+                  <span>📧</span>
+                  <span>Email Sequences</span>
+                </button>
+                <button
                   onClick={() => signOut({ callbackUrl: '/auth/signin' })}
                   className="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition-colors"
                 >
@@ -719,6 +732,24 @@ export default function Dashboard() {
                   <TrainYourTeam
                     isOpen={showTrainYourTeam}
                     onClose={() => setShowTrainYourTeam(false)}
+                  />
+                )}
+
+                {/* Outreach Strategy Modal */}
+                {showOutreachStrategy && completedCampaignData && (
+                  <OutreachStrategyModal
+                    isOpen={showOutreachStrategy}
+                    campaignData={completedCampaignData}
+                    onClose={(result) => {
+                      setShowOutreachStrategy(false);
+                      if (result?.strategy === 'burst') {
+                        // Open Smart Outreach modal for one-time email
+                        setSelectedCampaign(completedCampaignData);
+                        setSmartOutreachLeads(completedCampaignData.leads || []);
+                        setShowSmartOutreachAgent(true);
+                      }
+                      // If sequence, the modal will handle redirect
+                    }}
                   />
                 )}
 

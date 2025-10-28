@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useRouter } from 'next/router'
 import Link from 'next/link'
 import LeadDetailModal from '../../components/LeadDetailModal'
+import OutreachStrategyModal from '../../components/OutreachStrategyModal'
 
 export default function CampaignDetailPage() {
   const router = useRouter()
@@ -26,6 +27,7 @@ export default function CampaignDetailPage() {
   const [activityLog, setActivityLog] = useState([])
   const [funnelData, setFunnelData] = useState([])
   const [loadingAnalytics, setLoadingAnalytics] = useState(false)
+  const [showOutreachStrategy, setShowOutreachStrategy] = useState(false)
 
   const leadsPerPage = 50
 
@@ -325,6 +327,13 @@ export default function CampaignDetailPage() {
               <p className="text-gray-600">{campaign.description || 'No description'}</p>
             </div>
             <div className="flex gap-2 ml-4">
+              <button
+                onClick={() => setShowOutreachStrategy(true)}
+                className="px-6 py-2 bg-gradient-to-r from-purple-600 to-blue-600 text-white rounded-lg font-semibold hover:from-purple-700 hover:to-blue-700 transition-all transform hover:scale-105 shadow-lg"
+                disabled={!stats || stats.total_leads === 0}
+              >
+                🚀 Start Outreach
+              </button>
               <select
                 value={campaign.status}
                 onChange={(e) => updateCampaign({ status: e.target.value })}
@@ -908,6 +917,23 @@ export default function CampaignDetailPage() {
             setLeads(leads.map(l => l.id === updatedLead.id ? updatedLead : l))
             setSelectedLead(null)
             fetchStats()
+          }}
+        />
+      )}
+
+      {/* Outreach Strategy Modal */}
+      {showOutreachStrategy && campaign && (
+        <OutreachStrategyModal
+          isOpen={showOutreachStrategy}
+          campaignData={{
+            id: campaign.id,
+            name: campaign.name,
+            leads_count: stats?.total_leads || 0,
+            leads: leads
+          }}
+          onClose={(result) => {
+            setShowOutreachStrategy(false)
+            // If sequence was selected, modal will handle redirect
           }}
         />
       )}
