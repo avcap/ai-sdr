@@ -11,14 +11,15 @@ You are the human owner of this project.
 
 **AI SDR** is an **AI-powered Sales Development Representative (SDR) platform** for B2B outbound: prospecting, personalized outreach, reply tracking, and meeting booking. It is built as a **multi-tenant web app** with:
 
+- **CrewAI multi-agent workflow**: A four-agent Crew (Prospector, Personalization, Outreach, Coordinator) runs when you **Execute campaign**. The crew is defined in `agents/workflow.py` and is wired to `POST /campaigns/{campaign_id}/execute` in the Supabase backend; the frontend Execute button triggers this flow. Tasks run sequentially (Process.sequential); tools validate leads, generate personalized copy, and simulate outreach (no real send in this path unless you add Gmail/Sheets tools to the crew).
 - **Campaign and lead management** (create campaigns, upload/edit leads, track status).
-- **AI agents** for lead generation, personalization, copywriting, enrichment, and campaign execution.
-- **Email sequences** with steps (email, delay, condition, action), scheduling, and enrollment.
-- **Google integration**: OAuth (Gmail send, Sheets, Drive), so campaigns can send real email and track in Sheets.
-- **Knowledge base**: upload company/sales docs, extract structured knowledge (Claude), and use it for suggestions and personalization.
+- **Additional AI agents** for lead generation (Prospector), copywriting (Copywriter), enrichment (Enrichment), and Smart Campaign orchestration (prompt → Prospector → Enrichment → quality gates → campaign creation).
+- **Email sequences** with steps (email, delay, condition, action), scheduling, and enrollment; real sends via Gmail/SMTP.
+- **Google integration**: OAuth (Gmail send, Sheets, Drive); used by sequence execution and by the optional Google-integrated pipeline in `agents/google_workflow.py`.
+- **Knowledge base**: upload company/sales docs, extract structured knowledge (Claude), use for campaign suggestions and personalization.
 - **Analytics**: campaign stats, funnel, activity, export; sequence analytics; campaign intelligence suggestions.
 
-So in one sentence: **multi-tenant AI SDR that runs outreach campaigns and sequences using Gmail/Sheets and optional knowledge from uploaded docs.**
+So in one sentence: **multi-tenant AI SDR that runs a CrewAI crew on campaign execute and supports sequences, knowledge extraction, and multiple specialized agents.**
 
 ### Current end-to-end workflow or user journey
 
@@ -29,8 +30,8 @@ So in one sentence: **multi-tenant AI SDR that runs outreach campaigns and seque
    Upload docs (PDF, DOCX, TXT, etc.) → backend extracts knowledge via **Claude** (`KnowledgeExtractionAgent`) → stored in Supabase `user_knowledge` / `training_documents`. Used later for campaign suggestions and personalization.
 
 3. **Campaigns**  
-   Create campaign (name, description, etc.) → add leads (manual or CSV upload) → optionally run **Prospector** (AI-generated leads), **Enrichment**, or **Copywriter** (personalize message).  
-   **Execute campaign**: backend uses `agents.google_workflow.AISDRWorkflow` — validates leads, generates personalized email (OpenAI), sends via **Gmail** (user’s OAuth), creates a **Google Sheet** for tracking.  
+   Create campaign (name, description, etc.) → add leads (manual or CSV upload) → optionally run **Prospector**, **Enrichment**, or **Copywriter**.  
+   **Execute campaign** (Supabase backend): `POST /campaigns/{campaign_id}/execute` runs the **CrewAI workflow** from `agents/workflow.py` — creates a Crew with four agents (Prospector, Personalization, Outreach, Coordinator), runs `create_crew()` then `execute_campaign()` (which calls `crew.kickoff()`). Leads are validated, personalized messages generated, and outreach simulated (tools in this crew do not send real email; for real Gmail/Sheets use the Google-integrated path in `agents/google_workflow.py` or the SQLite backend).  
    **Email blast**: generate one blast email (AI) and send to campaign leads; tracked in `email_blasts` / `email_blast_recipients`.
 
 4. **Sequences**  
@@ -61,9 +62,9 @@ So in one sentence: **multi-tenant AI SDR that runs outreach campaigns and seque
 | Campaign intelligence suggestions | ✅ From knowledge + LLM in `CampaignIntelligenceService` | — |
 | Phase 3 (adaptive strategy, market intel, LLM recommendation, knowledge fusion, predictive analytics) | ✅ Endpoints and services exist | Some depend on Grok; Grok service returns mock when key missing |
 | LinkedIn | ❌ | LinkedIn sending “not implemented yet” in backend; `integrations/linkedin_service.py` has OAuth/message stubs |
-| CrewAI “Crew” orchestration | ❌ | `agents/workflow.py` defines CrewAI Agents/Tasks but **RagTool is imported and never used**; `google_workflow` does **not** use Crew, it uses a fixed tool chain (Prospecting → Personalization → Gmail/Sheets/Coordinator) |
+| CrewAI "Crew" orchestration | ✅ | **Wired**: `POST /campaigns/{campaign_id}/execute` (Supabase) loads campaign and leads, then calls `agents.workflow.AISDRWorkflow` — `create_crew()` then `execute_campaign()` (runs `crew.kickoff()`). Four-agent Crew runs sequentially; tools simulate outreach. RagTool is still imported but not used. |
 
-So: the **real** execution path today is **custom tool chain** in `agents/google_workflow.py` (and optionally `agents/workflow.py` for a non-Google, simulated path). CrewAI is present in code but the main flow doesn’t rely on it.
+So: **Execute campaign** on the Supabase backend runs the **CrewAI crew** from `agents/workflow.py`. The Google-integrated path (`agents/google_workflow.py`) remains available for real Gmail/Sheets sends (e.g. when using the SQLite backend or a separate endpoint).
 
 ---
 
@@ -85,7 +86,7 @@ So: the **real** execution path today is **custom tool chain** in `agents/google
   Backend uses a hardcoded demo user in `get_current_user()` in `main_supabase.py`; multi-tenant backend `backend_multi_tenant.py` has a “placeholder for auth” and “TODO: Implement proper JWT authentication”.
 
 - **Flows that work end-to-end**  
-  - Create campaign → add/upload leads → execute campaign (with Google OAuth: real Gmail sends + Sheet creation).  
+  - Create campaign → add/upload leads → **Execute campaign** (Supabase: runs CrewAI four-agent crew from `agents/workflow.py`; validates leads, generates personalized copy, simulates outreach).  
   - Create sequence → add steps → enroll leads → activate → scheduler runs steps (email steps send via Gmail).  
   - Train your team: upload docs → extract knowledge → use in campaign suggestions / copy.  
   - Prospector: generate leads (synthetic); Copywriter: personalize; Enrichment: validate/enrich; Campaign intelligence: suggestions from knowledge.  
@@ -326,12 +327,12 @@ Expect: “Ready on http://localhost:3000”.
 - **Train your team**: Upload a PDF or doc → “Extract knowledge” → show extracted knowledge in Knowledge Bank or in campaign suggestions.  
 - **Campaign intelligence**: Open dashboard or campaign intelligence — show “suggestions” based on knowledge (if any) and LLM.
 
-### Step 6: Execute campaign (if Google OAuth is configured)
+### Step 6: Execute campaign (CrewAI workflow)
 
-- Connect Google in the app (Settings or similar).  
-- On campaign, run “Execute”.  
-- Backend will: validate leads, generate personalized emails (OpenAI), send via Gmail, create a Google Sheet.  
-- Show Sheet and/or inbox to confirm sends.
+
+- On a campaign that has leads, click **Execute**.  
+- Backend runs the **CrewAI** workflow: `POST /campaigns/{campaign_id}/execute` loads campaign and leads, then invokes `agents.workflow.AISDRWorkflow` — `create_crew()` builds the four-agent Crew (Prospector, Personalization, Outreach, Coordinator), then `execute_campaign()` runs `crew.kickoff()`. Leads are validated, messages personalized, and outreach simulated (no real email in this path unless you add Gmail tools to the crew).  
+- Show the returned result (status, campaign_id, result from the crew).
 
 ### Step 7: Sequences (optional)
 
@@ -354,4 +355,4 @@ Expect: “Ready on http://localhost:3000”.
 
 ---
 
-**Summary**: The repo implements a working AI SDR with Supabase, Google (Gmail/Sheets/Drive), Claude/OpenAI for knowledge and copy, and a sequence execution engine. The main flow is a custom tool chain in `google_workflow`, not CrewAI. RAG is not implemented; LinkedIn is stubbed. For a full demo, run `backend/main_supabase.py` and the frontend, and use the steps above.
+**Summary**: The repo implements a working AI SDR with Supabase, Google (Gmail/Sheets/Drive), Claude/OpenAI for knowledge and copy, and a sequence execution engine. **Execute campaign** on the Supabase backend runs the **CrewAI** four-agent crew from `agents/workflow.py`; the frontend Execute button calls `POST /campaigns/{campaign_id}/execute`, which invokes the crew end-to-end. RAG is not implemented; LinkedIn is stubbed. For a full demo, run `backend/main_supabase.py` and the frontend, and use the steps above.

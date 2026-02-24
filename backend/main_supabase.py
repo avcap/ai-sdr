@@ -25,6 +25,7 @@ from integrations.google_sheets_service import GoogleSheetsService
 from integrations.google_oauth_service import GoogleOAuthService
 from services.supabase_service import SupabaseService
 from services.sequence_execution_service import sequence_execution_service
+from services.ai_sequence_generator import AISequenceGenerator
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # Configure logging
@@ -556,6 +557,67 @@ async def get_campaign_stats(
         raise
     except Exception as e:
         logger.error(f"❌ Error getting campaign stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/campaigns/{campaign_id}/execute")
+async def execute_campaign(
+    campaign_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Execute a campaign using the CrewAI multi-agent workflow (Prospector, Personalization, Outreach, Coordinator)."""
+    try:
+        logger.info(f"🚀 Executing campaign {campaign_id} with CrewAI workflow")
+        campaign_result = supabase_service.client.table("campaigns").select("*").eq("id", campaign_id).eq("tenant_id", current_user["tenant_id"]).execute()
+        if not campaign_result.data:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        campaign_row = campaign_result.data[0]
+        leads_result = supabase_service.client.table("leads").select("*").eq("campaign_id", campaign_id).eq("tenant_id", current_user["tenant_id"]).execute()
+        leads = leads_result.data or []
+        if not leads:
+            raise HTTPException(status_code=400, detail="Campaign has no leads")
+        created_at = campaign_row.get("created_at")
+        if isinstance(created_at, str):
+            created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00")) if "Z" in created_at else datetime.fromisoformat(created_at)
+        else:
+            created_at = created_at or datetime.utcnow()
+        from agents.workflow import AISDRWorkflow as CrewAIWorkflow, CampaignData as CrewCampaignData
+        campaign_data = CrewCampaignData(
+            campaign_id=campaign_id,
+            name=campaign_row.get("name", ""),
+            description=campaign_row.get("description", "") or "",
+            target_audience=campaign_row.get("target_audience", "") or "",
+            value_proposition=campaign_row.get("value_proposition", "") or "",
+            call_to_action=campaign_row.get("call_to_action", "") or "",
+            created_at=created_at,
+            status=campaign_row.get("status", "draft"),
+        )
+        leads_data = []
+        for lead in leads:
+            leads_data.append({
+                "name": lead.get("name", ""),
+                "company": lead.get("company", ""),
+                "title": lead.get("title", ""),
+                "email": lead.get("email"),
+                "linkedin_url": lead.get("linkedin_url"),
+                "phone": lead.get("phone"),
+                "industry": (lead.get("data") or {}).get("industry") if isinstance(lead.get("data"), dict) else None,
+                "company_size": (lead.get("data") or {}).get("company_size") if isinstance(lead.get("data"), dict) else None,
+                "location": (lead.get("data") or {}).get("location") if isinstance(lead.get("data"), dict) else None,
+            })
+        workflow = CrewAIWorkflow()
+        workflow.create_crew(campaign_id, leads_data, campaign_data)
+        results = workflow.execute_campaign()
+        supabase_service.client.table("campaigns").update({"status": "active", "updated_at": datetime.utcnow().isoformat()}).eq("id", campaign_id).eq("tenant_id", current_user["tenant_id"]).execute()
+        return {
+            "success": True,
+            "message": "Campaign executed with CrewAI workflow",
+            "campaign_id": campaign_id,
+            "result": results,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error executing campaign: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # Lead endpoints
@@ -3478,107 +3540,32 @@ async def create_sequence_from_campaign(
         sequence_id = sequence.data[0]['id']
         logger.info(f"✅ Created sequence {sequence_id}")
         
-        # Create template steps
-        template_steps = [
-            {
+        # Generate AI-powered sequence steps using knowledge bank
+        ai_generator = AISequenceGenerator()
+        ai_steps = ai_generator.generate_sequence_steps(
+            campaign_data=campaign_data,
+            lead_sample=leads.data if leads.data else [],
+            tenant_id=current_user['tenant_id'],
+            user_id=current_user['user_id'],
+            num_steps=7
+        )
+        
+        logger.info(f"🤖 Generated {len(ai_steps)} AI-powered steps")
+        
+        # Add tenant_id and sequence_id to each AI-generated step
+        template_steps = []
+        for step in ai_steps:
+            step_data = {
                 'tenant_id': current_user['tenant_id'],
                 'sequence_id': sequence_id,
-                'step_order': 1,
-                'step_type': 'email',
-                'name': 'Initial Outreach',
-                'subject_line': f"Quick question about {{{{company}}}}'s {target_audience}",
-                'body_text': f"""Hi {{{{name}}}},
-
-I noticed {{{{company}}}} is working in {target_audience} and thought this might be relevant.
-
-{value_proposition}
-
-{call_to_action}
-
-Best regards,
-{{{{sender_name}}}}""",
-                'delay_days': 0,
-                'delay_hours': 0
-            },
-            {
-                'tenant_id': current_user['tenant_id'],
-                'sequence_id': sequence_id,
-                'step_order': 2,
-                'step_type': 'delay',
-                'name': 'Wait 2 Days',
-                'delay_days': 2,
-                'delay_hours': 0
-            },
-            {
-                'tenant_id': current_user['tenant_id'],
-                'sequence_id': sequence_id,
-                'step_order': 3,
-                'step_type': 'condition',
-                'name': 'Check if Replied',
-                'condition_type': 'if_not_replied'
-            },
-            {
-                'tenant_id': current_user['tenant_id'],
-                'sequence_id': sequence_id,
-                'step_order': 4,
-                'step_type': 'email',
-                'name': 'Follow-up #1',
-                'subject_line': 'Re: Quick question about {{company}}',
-                'body_text': f"""Hi {{{{name}}}},
-
-Just wanted to follow up on my previous email about {target_audience}.
-
-I understand you're busy, but I genuinely think {{{{company}}}} could benefit from what we offer:
-
-{value_proposition}
-
-Would next Tuesday or Wednesday work for a brief call?
-
-Best,
-{{{{sender_name}}}}""",
-                'delay_days': 0,
-                'delay_hours': 0
-            },
-            {
-                'tenant_id': current_user['tenant_id'],
-                'sequence_id': sequence_id,
-                'step_order': 5,
-                'step_type': 'delay',
-                'name': 'Wait 3 Days',
-                'delay_days': 3,
-                'delay_hours': 0
-            },
-            {
-                'tenant_id': current_user['tenant_id'],
-                'sequence_id': sequence_id,
-                'step_order': 6,
-                'step_type': 'condition',
-                'name': 'Check if Replied',
-                'condition_type': 'if_not_replied'
-            },
-            {
-                'tenant_id': current_user['tenant_id'],
-                'sequence_id': sequence_id,
-                'step_order': 7,
-                'step_type': 'email',
-                'name': 'Final Follow-up',
-                'subject_line': 'Last follow-up - {{company}}',
-                'body_text': f"""Hi {{{{name}}}},
-
-This will be my last follow-up. I don't want to be a bother, but I wanted to give it one more shot.
-
-Many companies in {target_audience} have found value in what we offer.
-
-{call_to_action}
-
-If now's not the right time, no worries at all.
-
-Best of luck!
-{{{{sender_name}}}}""",
-                'delay_days': 0,
-                'delay_hours': 0
+                **step  # Merge in the AI-generated step data
             }
-        ]
+            # Ensure delay fields exist for all step types
+            if 'delay_days' not in step_data:
+                step_data['delay_days'] = 0
+            if 'delay_hours' not in step_data:
+                step_data['delay_hours'] = 0
+            template_steps.append(step_data)
         
         # Insert all steps
         steps_result = supabase_service.client.table('sequence_steps').insert(template_steps).execute()
@@ -3619,6 +3606,294 @@ Best of luck!
         raise
     except Exception as e:
         logger.error(f"❌ Error creating sequence from campaign: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/campaigns/{campaign_id}/generate-blast-email")
+async def generate_blast_email(
+    campaign_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Generate AI-powered email template for one-time blast"""
+    try:
+        logger.info(f"🤖 Generating email template for campaign {campaign_id}")
+        
+        # Get campaign details
+        campaign = supabase_service.client.table('campaigns').select('*').eq('id', campaign_id).eq('tenant_id', current_user['tenant_id']).execute()
+        
+        if not campaign.data:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        
+        campaign_data = campaign.data[0]
+        
+        # Get lead sample for context
+        leads = supabase_service.client.table('leads').select('*').eq('campaign_id', campaign_id).eq('tenant_id', current_user['tenant_id']).limit(5).execute()
+        
+        # Generate AI template using AISequenceGenerator
+        ai_generator = AISequenceGenerator()
+        ai_steps = ai_generator.generate_sequence_steps(
+            campaign_data=campaign_data,
+            lead_sample=leads.data if leads.data else [],
+            tenant_id=current_user['tenant_id'],
+            user_id=current_user['user_id'],
+            num_steps=1  # Just generate the initial email
+        )
+        
+        # Extract the first email step
+        if ai_steps and len(ai_steps) > 0 and ai_steps[0]['step_type'] == 'email':
+            email_step = ai_steps[0]
+            return {
+                "subject": email_step.get('subject_line', 'Quick question'),
+                "body": email_step.get('body_text', 'Email content')
+            }
+        else:
+            # Fallback to default template
+            settings = campaign_data.get('settings', {})
+            target_audience = settings.get('target_audience', campaign_data.get('description', 'your industry'))
+            value_proposition = settings.get('value_proposition', 'We help companies improve their operations.')
+            call_to_action = settings.get('call_to_action', 'Would you be open to a quick call?')
+            
+            return {
+                "subject": f"Quick question about {{{{company}}}}'s {target_audience}",
+                "body": f"""Hi {{{{name}}}},
+
+I noticed {{{{company}}}} is working in {target_audience}.
+
+{value_proposition}
+
+{call_to_action}
+
+Best regards,
+{{{{sender_name}}}}"""
+            }
+            
+    except Exception as e:
+        logger.error(f"❌ Error generating blast email: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/campaigns/{campaign_id}/send-blast")
+async def send_email_blast(
+    campaign_id: str,
+    request: dict,
+    current_user: dict = Depends(get_current_user)
+):
+    """Send one-time email blast to all campaign leads"""
+    try:
+        subject = request.get('subject')
+        body = request.get('body')
+        
+        if not subject or not body:
+            raise HTTPException(status_code=400, detail="Subject and body are required")
+        
+        logger.info(f"📧 Sending email blast for campaign {campaign_id}")
+        
+        # Get all leads for this campaign
+        leads = supabase_service.client.table('leads').select('*').eq('campaign_id', campaign_id).eq('tenant_id', current_user['tenant_id']).execute()
+        
+        if not leads.data:
+            raise HTTPException(status_code=404, detail="No leads found for this campaign")
+        
+        # Get user's Gmail credentials
+        google_auth = supabase_service.client.table('google_auth').select('*').eq('tenant_id', current_user['tenant_id']).execute()
+        
+        if not google_auth.data:
+            raise HTTPException(status_code=400, detail="Google account not connected. Please connect your Gmail account first.")
+        
+        auth_data = google_auth.data[0]
+        access_token = auth_data.get('access_token')
+        refresh_token = auth_data.get('refresh_token')
+        
+        # Create email blast record
+        blast_record = supabase_service.client.table('email_blasts').insert({
+            'tenant_id': current_user['tenant_id'],
+            'user_id': current_user['user_id'],
+            'campaign_id': campaign_id,
+            'subject': subject,
+            'body': body,
+            'total_leads': len(leads.data),
+            'emails_sent': 0,
+            'emails_failed': 0,
+            'status': 'sending'
+        }).execute()
+        
+        if not blast_record.data:
+            raise HTTPException(status_code=500, detail="Failed to create blast record")
+        
+        blast_id = blast_record.data[0]['id']
+        logger.info(f"📋 Created blast record: {blast_id}")
+        
+        # Send emails
+        google_service = GoogleOAuthService()
+        emails_sent = 0
+        emails_failed = 0
+        blast_recipients = []
+        
+        for lead in leads.data:
+            try:
+                # Personalize email for this lead
+                personalized_subject = subject.replace('{{name}}', lead.get('name', ''))
+                personalized_subject = personalized_subject.replace('{{company}}', lead.get('company', ''))
+                personalized_subject = personalized_subject.replace('{{title}}', lead.get('title', ''))
+                personalized_subject = personalized_subject.replace('{{industry}}', lead.get('industry', ''))
+                
+                personalized_body = body.replace('{{name}}', lead.get('name', ''))
+                personalized_body = personalized_body.replace('{{company}}', lead.get('company', ''))
+                personalized_body = personalized_body.replace('{{title}}', lead.get('title', ''))
+                personalized_body = personalized_body.replace('{{industry}}', lead.get('industry', ''))
+                personalized_body = personalized_body.replace('{{sender_name}}', 'Your Sales Team')  # TODO: Get from user profile
+                
+                # Send via Gmail API
+                result = google_service.send_email_via_gmail(
+                    access_token=access_token,
+                    refresh_token=refresh_token,
+                    to_email=lead.get('email'),
+                    subject=personalized_subject,
+                    body=personalized_body
+                )
+                
+                # Track recipient
+                recipient_status = 'sent' if result.get('success') else 'failed'
+                blast_recipients.append({
+                    'tenant_id': current_user['tenant_id'],
+                    'blast_id': blast_id,
+                    'lead_id': lead.get('id'),
+                    'email': lead.get('email'),
+                    'name': lead.get('name'),
+                    'company': lead.get('company'),
+                    'personalized_subject': personalized_subject,
+                    'personalized_body': personalized_body,
+                    'status': recipient_status,
+                    'error_message': result.get('error') if not result.get('success') else None
+                })
+                
+                if result.get('success'):
+                    emails_sent += 1
+                    # Update lead status
+                    supabase_service.client.table('leads').update({
+                        'status': 'contacted',
+                        'updated_at': datetime.now(timezone.utc).isoformat()
+                    }).eq('id', lead.get('id')).eq('tenant_id', current_user['tenant_id']).execute()
+                else:
+                    emails_failed += 1
+                    logger.warning(f"Failed to send to {lead.get('email')}: {result.get('error')}")
+                    
+            except Exception as e:
+                emails_failed += 1
+                error_msg = str(e)
+                logger.error(f"Error sending to {lead.get('email')}: {e}")
+                
+                # Track failed recipient
+                blast_recipients.append({
+                    'tenant_id': current_user['tenant_id'],
+                    'blast_id': blast_id,
+                    'lead_id': lead.get('id'),
+                    'email': lead.get('email'),
+                    'name': lead.get('name'),
+                    'company': lead.get('company'),
+                    'personalized_subject': personalized_subject,
+                    'personalized_body': personalized_body,
+                    'status': 'failed',
+                    'error_message': error_msg
+                })
+        
+        # Save all recipients to database
+        if blast_recipients:
+            supabase_service.client.table('email_blast_recipients').insert(blast_recipients).execute()
+            logger.info(f"📝 Recorded {len(blast_recipients)} blast recipients")
+        
+        # Update blast record with final stats
+        supabase_service.client.table('email_blasts').update({
+            'emails_sent': emails_sent,
+            'emails_failed': emails_failed,
+            'status': 'completed',
+            'sent_at': datetime.now(timezone.utc).isoformat(),
+            'updated_at': datetime.now(timezone.utc).isoformat()
+        }).eq('id', blast_id).eq('tenant_id', current_user['tenant_id']).execute()
+        
+        logger.info(f"✅ Email blast completed: {emails_sent} sent, {emails_failed} failed")
+        
+        return {
+            "success": True,
+            "blast_id": blast_id,
+            "emails_sent": emails_sent,
+            "emails_failed": emails_failed,
+            "total_leads": len(leads.data)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error sending email blast: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/campaigns/{campaign_id}/email-blasts")
+async def get_campaign_email_blasts(
+    campaign_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get all email blasts for a campaign"""
+    try:
+        logger.info(f"📧 Fetching email blasts for campaign {campaign_id}")
+        
+        blasts = supabase_service.client.table('email_blasts')\
+            .select('*')\
+            .eq('campaign_id', campaign_id)\
+            .eq('tenant_id', current_user['tenant_id'])\
+            .order('sent_at', desc=True)\
+            .execute()
+        
+        return {
+            "blasts": blasts.data or [],
+            "total": len(blasts.data) if blasts.data else 0
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error fetching email blasts: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/email-blasts/{blast_id}")
+async def get_email_blast_details(
+    blast_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get email blast details with recipients"""
+    try:
+        logger.info(f"📧 Fetching blast details for {blast_id}")
+        
+        # Get blast record
+        blast = supabase_service.client.table('email_blasts')\
+            .select('*')\
+            .eq('id', blast_id)\
+            .eq('tenant_id', current_user['tenant_id'])\
+            .single()\
+            .execute()
+        
+        if not blast.data:
+            raise HTTPException(status_code=404, detail="Blast not found")
+        
+        # Get recipients
+        recipients = supabase_service.client.table('email_blast_recipients')\
+            .select('*')\
+            .eq('blast_id', blast_id)\
+            .eq('tenant_id', current_user['tenant_id'])\
+            .order('sent_at', desc=True)\
+            .execute()
+        
+        # Get stats
+        stats = supabase_service.client.rpc('get_email_blast_stats', {
+            'p_blast_id': blast_id,
+            'p_tenant_id': current_user['tenant_id']
+        }).execute()
+        
+        return {
+            "blast": blast.data,
+            "recipients": recipients.data or [],
+            "stats": stats.data[0] if stats.data else {}
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error fetching blast details: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/leads/enroll-in-sequence")
