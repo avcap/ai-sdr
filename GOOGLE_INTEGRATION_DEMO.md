@@ -42,7 +42,7 @@ GOOGLE_CLIENT_SECRET=your_google_client_secret_here
 GOOGLE_REDIRECT_URI=http://localhost:3000/auth/google/callback
 
 # OpenAI API Key (required for CrewAI)
-OPENAI_API_KEY=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
+OPENAI_API_KEY=your_openai_api_key_here
 ```
 
 Update `frontend/.env.local`:
@@ -222,5 +222,7 @@ For issues or questions:
 4. Test API endpoints directly
 
 The system is now production-ready with Google OAuth integration!
+
+
 
 
