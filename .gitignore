@@ -63,8 +63,8 @@ build/
 logs/
 *.log
 
-# Uploads (optional - uncomment if you don't want to track uploads)
-# uploads/
+# Uploads (training docs may contain sensitive data - do not commit)
+uploads/
 
 # Cookies
 cookies.txt

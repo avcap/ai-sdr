@@ -34,7 +34,7 @@ def test_campaign_intelligence_service():
         # Test with mock knowledge data
         mock_knowledge = {
             'company_info': {
-                'company_name': 'Avius LLC',
+                'company_name': 'Sample Company',
                 'industry': 'Technology',
                 'sales_approach': 'Consultative selling focused on AI solutions'
             },
