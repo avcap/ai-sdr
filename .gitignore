@@ -72,6 +72,7 @@ cookies.txt
 # Documentation (keep local only, do not commit)
 *.md
 !REPO_ANALYSIS.md
+!README.md
 
 # OS
 .DS_Store
